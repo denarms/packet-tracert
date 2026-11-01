@@ -335,10 +335,75 @@ class AppController {
       });
     });
 
-    // 10. Modal close
-    document.getElementById('modal-close').addEventListener('click', () => {
-      this.modal.style.display = 'none';
-    });
+    // 10. Modal Window Controls & Native Draggable Dialog (Matching Screenshots 3, 4, 5, 6, 7)
+    const modalWin = document.getElementById('pt-modal-win');
+    const modalTitlebar = document.getElementById('modal-titlebar');
+    const modalMin = document.getElementById('modal-minimize');
+    const modalMax = document.getElementById('modal-maximize');
+    const modalClose = document.getElementById('modal-close');
+    const modalTopChk = document.getElementById('modal-top-chk');
+
+    let isDraggingModal = false;
+    let dragStartX = 0, dragStartY = 0;
+    let initialWinX = 0, initialWinY = 0;
+
+    if (modalTitlebar && modalWin) {
+      modalTitlebar.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.modal-win-controls')) return;
+        isDraggingModal = true;
+        modalWin.dataset.dragged = 'true';
+        dragStartX = e.clientX;
+        dragStartY = e.clientY;
+        const rect = modalWin.getBoundingClientRect();
+        initialWinX = rect.left;
+        initialWinY = rect.top;
+        modalWin.style.position = 'fixed';
+        modalWin.style.left = `${initialWinX}px`;
+        modalWin.style.top = `${initialWinY}px`;
+        modalWin.style.margin = '0';
+        modalWin.style.transform = 'none';
+      });
+
+      window.addEventListener('mousemove', (e) => {
+        if (!isDraggingModal) return;
+        const dx = e.clientX - dragStartX;
+        const dy = e.clientY - dragStartY;
+        modalWin.style.left = `${Math.max(0, initialWinX + dx)}px`;
+        modalWin.style.top = `${Math.max(0, initialWinY + dy)}px`;
+      });
+
+      window.addEventListener('mouseup', () => {
+        isDraggingModal = false;
+      });
+    }
+
+    if (modalMin) {
+      modalMin.addEventListener('click', () => {
+        this.modal.style.display = 'none';
+      });
+    }
+
+    if (modalMax && modalWin) {
+      modalMax.addEventListener('click', () => {
+        modalWin.classList.toggle('maximized');
+      });
+    }
+
+    if (modalClose) {
+      modalClose.addEventListener('click', () => {
+        this.modal.style.display = 'none';
+      });
+    }
+
+    if (modalTopChk) {
+      modalTopChk.addEventListener('change', () => {
+        if (modalTopChk.checked) {
+          this.modal.classList.add('pinned-top');
+        } else {
+          this.modal.classList.remove('pinned-top');
+        }
+      });
+    }
 
     // 11. Topology listener
     this.topology.on((name) => {
@@ -1160,15 +1225,23 @@ class AppController {
   }
 
   openDeviceModal(dev) {
-    this.modalTitle.innerText = `${dev.name} (${dev.model || dev.type.toUpperCase()})`;
-    this.modalIcon.src = DEVICE_LOGICAL_ASSETS[dev.type] || DEVICE_LOGICAL_ASSETS['pc'];
+    this.modalTitle.innerText = dev.name;
+    this.modalIcon.src = 'assets/pt_icon.ico';
     this.modalTabs.innerHTML = '';
     this.modalContent.innerHTML = '';
+
+    const modalWin = document.getElementById('pt-modal-win');
+    if (modalWin && !modalWin.dataset.dragged) {
+      modalWin.style.position = 'absolute';
+      modalWin.style.left = '50%';
+      modalWin.style.top = '50%';
+      modalWin.style.transform = 'translate(-50%, -50%)';
+    }
 
     dev._activeCfgView = dev._activeCfgView || 'settings';
     dev._activeCfgIface = dev._activeCfgIface || (dev.interfaces[0] ? dev.interfaces[0].name : null);
     if (!dev._iosCommandsLog) {
-      dev._iosCommandsLog = 'Press RETURN to get started!\n\n';
+      dev._iosCommandsLog = 'Press RETURN to get started!\n\nPress RETURN to get started!\n\nPress RETURN to get started!\n\n';
     }
 
     let tabs;
@@ -1332,6 +1405,708 @@ class AppController {
         scroll.scrollTop = scroll.scrollHeight;
       }
     });
+  }
+
+  /* ==========================================================================
+     Desktop Tab & Applications (Matching User Screenshot 4)
+     ========================================================================== */
+
+  renderDesktopTab(dev) {
+    const apps = [
+      { id: 'app-ip', name: 'IP Configuration', icon: 'assets/desktop/ipconfig.png' },
+      { id: 'app-dialup', name: 'Dial-up', icon: 'assets/desktop/dialup.png' },
+      { id: 'app-terminal', name: 'Terminal', icon: 'assets/desktop/terminal.png' },
+      { id: 'app-cmd', name: 'Command Prompt', icon: 'assets/desktop/cmdprompt.png' },
+      { id: 'app-browser', name: 'Web Browser', icon: 'assets/desktop/browser.png' },
+      { id: 'app-wireless', name: 'PC Wireless', icon: 'assets/desktop/Wireless-PC.png' },
+      { id: 'app-vpn', name: 'VPN', icon: 'assets/desktop/VPNdialup.png' },
+      { id: 'app-traffic', name: 'Traffic Generator', icon: 'assets/desktop/trafficGenerator.png' },
+      { id: 'app-mib', name: 'MIB Browser', icon: 'assets/desktop/mibbrowser.png' },
+      { id: 'app-communicator', name: 'Cisco IP Communicator', icon: 'assets/desktop/IPCommunicator.png' },
+      { id: 'app-email', name: 'Email', icon: 'assets/desktop/EmailClient.png' },
+      { id: 'app-pppoe', name: 'PPPoE Dialer', icon: 'assets/desktop/PPPoEDialer.png' },
+      { id: 'app-editor', name: 'Text Editor', icon: 'assets/desktop/TextEditor.png' },
+      { id: 'app-firewall', name: 'Firewall', icon: 'assets/desktop/IPv4Firewall.png' },
+      { id: 'app-firewall6', name: 'IPv6 Firewall', icon: 'assets/desktop/IPv6Firewall.png' },
+      { id: 'app-netflow', name: 'Netflow Collector', icon: 'assets/desktop/NetflowCollector.png' },
+      { id: 'app-iox', name: 'IoX IDE', icon: 'assets/desktop/IoxSdk.png' },
+      { id: 'app-tftp', name: 'TFTP Service', icon: 'assets/desktop/TftpService.png' },
+      { id: 'app-ssh', name: 'Telnet / SSH Client', icon: 'assets/desktop/SSH.png' },
+      { id: 'app-bluetooth', name: 'Bluetooth', icon: 'assets/desktop/Bluetooth.png' }
+    ];
+
+    let gridHtml = '';
+    apps.forEach(app => {
+      gridHtml += `
+        <div class="app-shortcut" id="${app.id}" title="${app.name}">
+          <div class="app-icon-tile">
+            <img src="${app.icon}" alt="${app.name}">
+          </div>
+          <span>${app.name}</span>
+        </div>
+      `;
+    });
+
+    this.modalContent.innerHTML = `<div class="desktop-app-grid">${gridHtml}</div>`;
+
+    document.getElementById('app-ip').addEventListener('click', () => this.renderPCIPConfig(dev));
+    document.getElementById('app-cmd').addEventListener('click', () => this.renderPCCommandPrompt(dev));
+    document.getElementById('app-browser').addEventListener('click', () => this.renderPCWebBrowser(dev));
+    document.getElementById('app-terminal').addEventListener('click', () => this.renderPCTerminal(dev));
+    document.getElementById('app-editor').addEventListener('click', () => this.renderPCTextEditor(dev));
+    document.getElementById('app-ssh').addEventListener('click', () => this.renderPCTelnetSSH(dev));
+    document.getElementById('app-wireless').addEventListener('click', () => this.renderPCPCWireless(dev));
+    document.getElementById('app-email').addEventListener('click', () => this.renderPCEmail(dev));
+    document.getElementById('app-firewall').addEventListener('click', () => this.renderPCFirewall(dev));
+    document.getElementById('app-firewall6').addEventListener('click', () => this.renderPCFirewall(dev, true));
+    document.getElementById('app-tftp').addEventListener('click', () => this.renderPCTftp(dev));
+    document.getElementById('app-traffic').addEventListener('click', () => this.renderPCTrafficGen(dev));
+
+    ['app-dialup', 'app-vpn', 'app-mib', 'app-communicator', 'app-pppoe', 'app-netflow', 'app-iox', 'app-bluetooth'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.addEventListener('click', () => {
+          const matched = apps.find(a => a.id === id);
+          this.renderGenericApp(dev, matched ? matched.name : 'Application', matched ? matched.icon : '');
+        });
+      }
+    });
+  }
+
+  renderPCIPConfig(dev) {
+    const isDhcp = (dev.ipType === 'dhcp');
+
+    this.modalContent.innerHTML = `
+      <div class="desktop-subapp-view">
+        <div class="desktop-subapp-topbar">
+          <div class="desktop-subapp-title">
+            <img src="assets/desktop/ipconfig.png" width="16" height="16">
+            <span>IP Configuration (FastEthernet0)</span>
+          </div>
+          <button class="desktop-btn-back" id="btn-back-desktop">◄ Back to Desktop</button>
+        </div>
+        <div style="padding: 16px; overflow-y: auto; max-width: 500px;">
+          <div class="cfg-box-group" style="margin-top:0;">
+            <div class="cfg-box-title">IP Configuration</div>
+            <div class="cfg-radio-group">
+              <label class="cfg-radio-label"><input type="radio" name="pc-ip-mode" id="pc-ip-dhcp" ${isDhcp ? 'checked' : ''}> DHCP</label>
+              <label class="cfg-radio-label"><input type="radio" name="pc-ip-mode" id="pc-ip-static" ${!isDhcp ? 'checked' : ''}> Static</label>
+            </div>
+            <div class="cfg-row-flex">
+              <span class="cfg-label-fixed">IP Address</span>
+              <input type="text" id="pc-ip-in" class="cfg-input-text" value="${dev.ip || ''}" placeholder="192.168.1.10">
+            </div>
+            <div class="cfg-row-flex">
+              <span class="cfg-label-fixed">Subnet Mask</span>
+              <input type="text" id="pc-mask-in" class="cfg-input-text" value="${dev.mask || '255.255.255.0'}">
+            </div>
+            <div class="cfg-row-flex">
+              <span class="cfg-label-fixed">Default Gateway</span>
+              <input type="text" id="pc-gw-in" class="cfg-input-text" value="${dev.gateway || ''}" placeholder="192.168.1.1">
+            </div>
+            <div class="cfg-row-flex">
+              <span class="cfg-label-fixed">DNS Server</span>
+              <input type="text" id="pc-dns-in" class="cfg-input-text" value="${dev.dns || '0.0.0.0'}">
+            </div>
+          </div>
+          <div class="cfg-box-group">
+            <div class="cfg-box-title">IPv6 Configuration</div>
+            <div class="cfg-radio-group">
+              <label class="cfg-radio-label"><input type="radio" name="pc-ip6-mode" checked> Auto</label>
+              <label class="cfg-radio-label"><input type="radio" name="pc-ip6-mode"> Static</label>
+            </div>
+            <div class="cfg-row-flex">
+              <span class="cfg-label-fixed">IPv6 Address</span>
+              <input type="text" class="cfg-input-text" value="${dev.ipv6 || ''}" placeholder="2001:db8::1/64">
+            </div>
+          </div>
+          <div style="display:flex; gap:10px; margin-top:14px;">
+            <button id="pc-save-btn" class="cfg-action-button" style="padding: 5px 16px;">Save IP Configuration</button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('btn-back-desktop').addEventListener('click', () => this.renderDesktopTab(dev));
+
+    const radDhcp = document.getElementById('pc-ip-dhcp');
+    const radStatic = document.getElementById('pc-ip-static');
+    const ipIn = document.getElementById('pc-ip-in');
+    const maskIn = document.getElementById('pc-mask-in');
+    const gwIn = document.getElementById('pc-gw-in');
+
+    radDhcp.addEventListener('change', () => {
+      if (radDhcp.checked) {
+        dev.ipType = 'dhcp';
+        ipIn.value = '192.168.1.' + (Math.floor(Math.random() * 50) + 10);
+        maskIn.value = '255.255.255.0';
+        gwIn.value = '192.168.1.1';
+      }
+    });
+
+    radStatic.addEventListener('change', () => {
+      if (radStatic.checked) dev.ipType = 'static';
+    });
+
+    document.getElementById('pc-save-btn').addEventListener('click', () => {
+      dev.ip = ipIn.value.trim();
+      dev.mask = maskIn.value.trim();
+      dev.gateway = gwIn.value.trim();
+      dev.dns = document.getElementById('pc-dns-in').value.trim();
+      this.topology.emit('topology-changed');
+      alert('IP Configuration saved successfully.');
+      this.renderDesktopTab(dev);
+    });
+  }
+
+  renderPCCommandPrompt(dev) {
+    this.modalContent.innerHTML = `
+      <div class="desktop-subapp-view">
+        <div class="desktop-subapp-topbar">
+          <div class="desktop-subapp-title">
+            <img src="assets/desktop/cmdprompt.png" width="16" height="16">
+            <span>Command Prompt</span>
+          </div>
+          <button class="desktop-btn-back" id="btn-back-desktop">◄ Back to Desktop</button>
+        </div>
+        <div class="cli-viewport" style="flex:1; display:flex; flex-direction:column; background:#000000; padding:8px;">
+          <div class="cli-scroll" id="pc-cmd-scroll" style="flex:1; overflow-y:auto; color:#ffffff; font-family:'Consolas','Courier New',monospace; font-size:12px; white-space:pre-wrap; line-height:1.4;">Packet Tracer PC Command Line 1.0\nC:\\></div>
+          <div class="cli-input-box" style="display:flex; align-items:center; gap:4px; margin-top:4px;">
+            <span class="cli-prompt-text" style="color: #cbd5e1; font-family:'Consolas',monospace; font-size:12px;">C:\\></span>
+            <input type="text" class="cli-cmd-input" id="pc-cmd-input" autofocus autocomplete="off" spellcheck="false" style="flex:1; background:transparent; border:none; outline:none; color:#ffffff; font-family:'Consolas',monospace; font-size:12px;">
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('btn-back-desktop').addEventListener('click', () => this.renderDesktopTab(dev));
+
+    const scroll = document.getElementById('pc-cmd-scroll');
+    const input = document.getElementById('pc-cmd-input');
+    input.focus();
+
+    input.addEventListener('keydown', async (e) => {
+      if (e.key === 'Enter') {
+        const val = input.value.trim();
+        input.value = '';
+        scroll.innerText += `${val}\n`;
+
+        const parts = val.split(/\s+/);
+        const cmd = parts[0].toLowerCase();
+
+        if (cmd === 'ipconfig') {
+          scroll.innerText += `
+FastEthernet0 Connection:
+   Connection-specific DNS Suffix..:
+   Link-local IPv6 Address.........: fe80::${dev.id.replace('dev_', '')}
+   IPv4 Address....................: ${dev.ip || '0.0.0.0'}
+   Subnet Mask.....................: ${dev.mask || '0.0.0.0'}
+   Default Gateway.................: ${dev.gateway || '0.0.0.0'}
+   Physical Address................: ${dev.mac}
+\nC:\\>`;
+        } else if (cmd === 'ping') {
+          if (!parts[1]) {
+            scroll.innerText += `\nUsage: ping <ip-address>\n\nC:\\>`;
+          } else {
+            scroll.innerText += `\nPinging ${parts[1]} with 32 bytes of data:\n`;
+            input.disabled = true;
+            const res = await this.topology.simulatePing(dev.id, parts[1]);
+            scroll.innerText += `\n${res.output}\n\nC:\\>`;
+            input.disabled = false;
+            input.focus();
+          }
+        } else if (cmd === 'tracert') {
+          const target = parts[1] || '192.168.1.1';
+          scroll.innerText += `\nTracing route to ${target} over a maximum of 30 hops:\n  1   <1 ms   <1 ms   <1 ms  ${target}\nTrace complete.\n\nC:\\>`;
+        } else if (cmd === 'arp' && parts[1] === '-a') {
+          scroll.innerText += `\nInterface: ${dev.ip || '192.168.1.10'} --- 0x2\n  Internet Address      Physical Address      Type\n  192.168.1.1           0001.96E2.3401        dynamic\n\nC:\\>`;
+        } else if (cmd === 'cls') {
+          scroll.innerText = 'C:\\>';
+        } else if (cmd === 'help') {
+          scroll.innerText += `\nComandos disponibles en Packet Tracer:
+  ipconfig [/all]    Muestra parámetros de red y adaptadores
+  ping <ip>          Envía paquetes ICMP Echo a un equipo remoto
+  tracert <ip>       Traza los saltos hasta el destino
+  arp -a             Muestra la tabla de resolución de direcciones ARP
+  cls                Limpia la pantalla
+\nC:\\>`;
+        } else if (val) {
+          scroll.innerText += `'${val}' is not recognized as an internal or external command.\n\nC:\\>`;
+        } else {
+          scroll.innerText += `\nC:\\>`;
+        }
+        scroll.scrollTop = scroll.scrollHeight;
+      }
+    });
+  }
+
+  renderPCWebBrowser(dev) {
+    this.modalContent.innerHTML = `
+      <div class="desktop-subapp-view">
+        <div class="desktop-subapp-topbar">
+          <div class="desktop-subapp-title">
+            <img src="assets/desktop/browser.png" width="16" height="16">
+            <span>Web Browser</span>
+          </div>
+          <button class="desktop-btn-back" id="btn-back-desktop">◄ Back to Desktop</button>
+        </div>
+        <div class="browser-url-bar">
+          <button class="browser-nav-btn" id="btn-web-back">◄</button>
+          <button class="browser-nav-btn" id="btn-web-fwd">►</button>
+          <button class="browser-nav-btn" id="btn-web-refresh">⟳</button>
+          <span style="font-size:11px; font-weight:600; color:#333;">URL:</span>
+          <input type="text" class="browser-url-input" id="browser-url-input" value="http://192.168.0.1" placeholder="http://192.168.0.1">
+          <button class="browser-nav-btn" id="btn-web-go" style="background:#0284c7; color:#fff; border-color:#0284c7; font-weight:700;">Go</button>
+        </div>
+        <div class="browser-page-body" id="browser-page-container">
+          <div style="text-align: center; padding: 40px;">
+            <img src="assets/common/CiscoLogo4.png" style="max-height: 48px; margin-bottom: 16px;">
+            <h2 style="font-size: 18px; color: #0284c7; margin-bottom: 8px;">Cisco Packet Tracer Web Server</h2>
+            <p style="font-size: 13px; color: #475569;">Welcome to the Packet Tracer integrated web service landing page.</p>
+            <hr style="margin: 24px auto; max-width: 480px; border: 0; border-top: 1px solid #e2e8f0;">
+            <p style="font-size: 12px; color: #64748b;">Enter the IP address of a web server or router to browse its HTTP services.</p>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('btn-back-desktop').addEventListener('click', () => this.renderDesktopTab(dev));
+
+    const urlIn = document.getElementById('browser-url-input');
+    const container = document.getElementById('browser-page-container');
+
+    const navigate = () => {
+      const url = urlIn.value.trim();
+      const host = url.replace(/^https?:\/\//i, '').split('/')[0];
+
+      // Check if target matches any device in topology
+      let targetDev = null;
+      for (const d of this.topology.devices.values()) {
+        if (d.ip === host || d.routerIP === host || d.interfaces.some(i => i.ip === host)) {
+          targetDev = d;
+          break;
+        }
+      }
+
+      if (targetDev && targetDev.type === 'wireless_router') {
+        container.innerHTML = `
+          <div style="background:#002d62; color:#fff; padding:12px; border-radius:4px; font-family:sans-serif;">
+            <h3 style="color:#ffcc00; margin-bottom:4px;">CISCO Linksys Wireless-AC Broadband Router</h3>
+            <p style="font-size:12px; margin-bottom:12px;">Web Administration Page (${targetDev.name} - ${targetDev.routerIP || '192.168.0.1'})</p>
+            <div style="background:#fff; color:#222; padding:16px; border-radius:2px; font-size:12px;">
+              <strong>Network Status:</strong> Online<br>
+              <strong>SSID:</strong> ${targetDev.ssid || 'Default'}<br>
+              <strong>Channel:</strong> ${targetDev.channel || '6 - 2.437GHz'}<br>
+              <strong>DHCP Server:</strong> ${targetDev.dhcpEnabled !== false ? 'Enabled' : 'Disabled'}<br>
+              <strong>IP Range:</strong> 192.168.0.100 - 192.168.0.150
+            </div>
+          </div>
+        `;
+      } else if (targetDev && (targetDev.type === 'server' || targetDev.type === 'pc')) {
+        container.innerHTML = `
+          <div style="text-align: center; padding: 40px; font-family:sans-serif;">
+            <h1 style="color:#0284c7; font-size:22px;">${targetDev.name} Web Server</h1>
+            <p style="font-size:13px; color:#475569; margin-top:8px;">HTTP/1.1 200 OK - Cisco Packet Tracer Server</p>
+            <div style="margin: 20px auto; max-width: 400px; padding: 14px; background:#f8fafc; border:1px solid #cbd5e1; border-radius:4px; text-align:left; font-size:12px;">
+              <strong>Server Name:</strong> ${targetDev.name}<br>
+              <strong>IP Address:</strong> ${targetDev.ip}<br>
+              <strong>Active Services:</strong> HTTP (Port 80), HTTPS (Port 443), DNS (Port 53)
+            </div>
+          </div>
+        `;
+      } else {
+        container.innerHTML = `
+          <div style="text-align:center; padding: 50px; font-family:sans-serif;">
+            <h3 style="color:#dc2626;">Request Timeout</h3>
+            <p style="font-size:12px; color:#64748b; margin-top:6px;">Host '${host}' could not be reached. Verify IP configuration and routing.</p>
+          </div>
+        `;
+      }
+    };
+
+    document.getElementById('btn-web-go').addEventListener('click', navigate);
+    document.getElementById('btn-web-refresh').addEventListener('click', navigate);
+    urlIn.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') navigate();
+    });
+  }
+
+  renderPCTerminal(dev) {
+    this.modalContent.innerHTML = `
+      <div class="desktop-subapp-view">
+        <div class="desktop-subapp-topbar">
+          <div class="desktop-subapp-title">
+            <img src="assets/desktop/terminal.png" width="16" height="16">
+            <span>Terminal (RS-232 Console)</span>
+          </div>
+          <button class="desktop-btn-back" id="btn-back-desktop">◄ Back to Desktop</button>
+        </div>
+        <div id="term-dialog" style="padding: 24px; max-width: 400px;">
+          <h4 style="font-size:12px; font-weight:700; margin-bottom:12px;">Terminal Configuration</h4>
+          <div class="cfg-row-flex"><span class="cfg-label-fixed">Bits per second:</span><select class="cfg-input-text"><option selected>9600</option></select></div>
+          <div class="cfg-row-flex"><span class="cfg-label-fixed">Data Bits:</span><select class="cfg-input-text"><option selected>8</option></select></div>
+          <div class="cfg-row-flex"><span class="cfg-label-fixed">Parity:</span><select class="cfg-input-text"><option selected>None</option></select></div>
+          <div class="cfg-row-flex"><span class="cfg-label-fixed">Stop Bits:</span><select class="cfg-input-text"><option selected>1</option></select></div>
+          <div class="cfg-row-flex"><span class="cfg-label-fixed">Flow Control:</span><select class="cfg-input-text"><option selected>None</option></select></div>
+          <div style="display:flex; gap:10px; margin-top:16px;">
+            <button class="cfg-action-button" id="btn-term-connect" style="padding:4px 18px; font-weight:700;">OK</button>
+          </div>
+        </div>
+        <div id="term-console-view" style="display:none; flex:1; flex-direction:column; background:#000; padding:10px;">
+          <div class="cli-scroll" id="term-scroll" style="flex:1; overflow-y:auto; color:#22c55e; font-family:'Consolas',monospace; font-size:12px; white-space:pre-wrap;">Connected to Console port (9600-8-N-1).\nPress RETURN to get started!\n</div>
+          <div style="display:flex; align-items:center; gap:4px; margin-top:4px;">
+            <span style="color:#22c55e; font-family:'Consolas',monospace; font-size:12px;" id="term-prompt">Router></span>
+            <input type="text" id="term-input" style="flex:1; background:transparent; border:none; outline:none; color:#fff; font-family:'Consolas',monospace; font-size:12px;">
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('btn-back-desktop').addEventListener('click', () => this.renderDesktopTab(dev));
+
+    document.getElementById('btn-term-connect').addEventListener('click', () => {
+      document.getElementById('term-dialog').style.display = 'none';
+      const termView = document.getElementById('term-console-view');
+      termView.style.display = 'flex';
+      const termInput = document.getElementById('term-input');
+      const termScroll = document.getElementById('term-scroll');
+      const termPrompt = document.getElementById('term-prompt');
+      termInput.focus();
+
+      termInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          const val = termInput.value;
+          termInput.value = '';
+          termScroll.innerText += `\n${termPrompt.innerText} ${val}\n`;
+          if (val === 'enable' || val === 'en') {
+            termPrompt.innerText = 'Router#';
+          } else if (val === 'conf t') {
+            termPrompt.innerText = 'Router(config)#';
+          } else if (val === 'exit') {
+            termPrompt.innerText = 'Router>';
+          } else if (val) {
+            termScroll.innerText += `% Invalid command or syntax.\n`;
+          }
+          termScroll.scrollTop = termScroll.scrollHeight;
+        }
+      });
+    });
+  }
+
+  renderPCTextEditor(dev) {
+    dev._savedText = dev._savedText || 'Welcome to Cisco Packet Tracer Text Editor.\nYou can write scripts, configuration templates and notes here.\n';
+
+    this.modalContent.innerHTML = `
+      <div class="desktop-subapp-view">
+        <div class="desktop-subapp-topbar">
+          <div class="desktop-subapp-title">
+            <img src="assets/desktop/TextEditor.png" width="16" height="16">
+            <span>Text Editor</span>
+          </div>
+          <button class="desktop-btn-back" id="btn-back-desktop">◄ Back to Desktop</button>
+        </div>
+        <div class="editor-menubar">
+          <span style="cursor:pointer;" id="ed-new"><u>F</u>ile New</span>
+          <span style="cursor:pointer;" id="ed-save"><u>S</u>ave</span>
+          <span style="cursor:pointer;" id="ed-clear">Clear</span>
+          <span style="margin-left:auto; color:#64748b;" id="ed-status">document.txt</span>
+        </div>
+        <textarea class="editor-textarea" id="ed-textarea">${dev._savedText}</textarea>
+      </div>
+    `;
+
+    document.getElementById('btn-back-desktop').addEventListener('click', () => this.renderDesktopTab(dev));
+
+    const ta = document.getElementById('ed-textarea');
+    ta.addEventListener('input', () => {
+      dev._savedText = ta.value;
+    });
+
+    document.getElementById('ed-new').addEventListener('click', () => {
+      ta.value = '';
+      dev._savedText = '';
+    });
+
+    document.getElementById('ed-save').addEventListener('click', () => {
+      dev._savedText = ta.value;
+      alert('File saved to local storage.');
+    });
+
+    document.getElementById('ed-clear').addEventListener('click', () => {
+      ta.value = '';
+    });
+  }
+
+  renderPCTelnetSSH(dev) {
+    this.modalContent.innerHTML = `
+      <div class="desktop-subapp-view">
+        <div class="desktop-subapp-topbar">
+          <div class="desktop-subapp-title">
+            <img src="assets/desktop/SSH.png" width="16" height="16">
+            <span>Telnet / SSH Client</span>
+          </div>
+          <button class="desktop-btn-back" id="btn-back-desktop">◄ Back to Desktop</button>
+        </div>
+        <div id="ssh-connect-box" style="padding: 20px; max-width: 440px;">
+          <div class="cfg-radio-group">
+            <label class="cfg-radio-label"><input type="radio" name="ssh-proto" id="proto-telnet" checked> Telnet</label>
+            <label class="cfg-radio-label"><input type="radio" name="ssh-proto" id="proto-ssh"> SSH</label>
+          </div>
+          <div class="cfg-row-flex">
+            <span class="cfg-label-fixed">Host IP:</span>
+            <input type="text" class="cfg-input-text" id="ssh-ip" value="192.168.1.1">
+          </div>
+          <div class="cfg-row-flex">
+            <span class="cfg-label-fixed">Port:</span>
+            <input type="number" class="cfg-input-text" id="ssh-port" value="23" style="max-width:80px;">
+          </div>
+          <div class="cfg-row-flex">
+            <span class="cfg-label-fixed">Username:</span>
+            <input type="text" class="cfg-input-text" id="ssh-user" value="cisco">
+          </div>
+          <button class="cfg-action-button" id="btn-ssh-connect" style="margin-top:12px; padding:4px 20px; font-weight:700;">Connect</button>
+        </div>
+        <div id="ssh-terminal-box" style="display:none; flex:1; flex-direction:column; background:#000; padding:10px;">
+          <div class="cli-scroll" id="ssh-scroll" style="flex:1; overflow-y:auto; color:#22c55e; font-family:'Consolas',monospace; font-size:12px; white-space:pre-wrap;"></div>
+          <div style="display:flex; align-items:center; gap:4px; margin-top:4px;">
+            <span style="color:#22c55e; font-family:'Consolas',monospace; font-size:12px;" id="ssh-prompt">Router#</span>
+            <input type="text" id="ssh-input" style="flex:1; background:transparent; border:none; outline:none; color:#fff; font-family:'Consolas',monospace; font-size:12px;">
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('btn-back-desktop').addEventListener('click', () => this.renderDesktopTab(dev));
+
+    document.getElementById('proto-telnet').addEventListener('change', () => {
+      document.getElementById('ssh-port').value = '23';
+    });
+    document.getElementById('proto-ssh').addEventListener('change', () => {
+      document.getElementById('ssh-port').value = '22';
+    });
+
+    document.getElementById('btn-ssh-connect').addEventListener('click', () => {
+      const targetIp = document.getElementById('ssh-ip').value.trim();
+      document.getElementById('ssh-connect-box').style.display = 'none';
+      const termBox = document.getElementById('ssh-terminal-box');
+      termBox.style.display = 'flex';
+      const scroll = document.getElementById('ssh-scroll');
+      const input = document.getElementById('ssh-input');
+      scroll.innerText = `Trying ${targetIp} ... Open\nUser Access Verification\nCisco IOS Software, C2900 Software\n\nRouter#`;
+      input.focus();
+
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          const val = input.value;
+          input.value = '';
+          scroll.innerText += `${val}\n`;
+          if (val === 'exit') {
+            scroll.innerText += `\n[Connection to ${targetIp} closed by foreign host]\n`;
+          } else {
+            scroll.innerText += `Building configuration...\n[OK]\nRouter#`;
+          }
+          scroll.scrollTop = scroll.scrollHeight;
+        }
+      });
+    });
+  }
+
+  renderPCPCWireless(dev) {
+    this.modalContent.innerHTML = `
+      <div class="desktop-subapp-view">
+        <div class="desktop-subapp-topbar">
+          <div class="desktop-subapp-title">
+            <img src="assets/desktop/Wireless-PC.png" width="16" height="16">
+            <span>PC Wireless (WMP300N)</span>
+          </div>
+          <button class="desktop-btn-back" id="btn-back-desktop">◄ Back to Desktop</button>
+        </div>
+        <div class="wireless-tab-header">
+          <button class="wireless-tab-btn active" id="wtab-info">Link Information</button>
+          <button class="wireless-tab-btn" id="wtab-site">Site Survey / Connect</button>
+        </div>
+        <div class="wireless-tab-content" id="wtab-body">
+          <div style="background:#f8fafc; border:1px solid #cbd5e1; padding:16px; border-radius:4px; max-width:480px;">
+            <h4 style="font-size:12px; color:#0284c7; margin-bottom:10px;">Wireless Link Status</h4>
+            <div class="cfg-row-flex"><span class="cfg-label-fixed">Status:</span><span style="color:#16a34a; font-weight:700;">Associated</span></div>
+            <div class="cfg-row-flex"><span class="cfg-label-fixed">SSID:</span><span>Default</span></div>
+            <div class="cfg-row-flex"><span class="cfg-label-fixed">Channel:</span><span>6 - 2.437 GHz</span></div>
+            <div class="cfg-row-flex"><span class="cfg-label-fixed">Wireless Mode:</span><span>802.11b/g/n Mixed</span></div>
+            <div class="cfg-row-flex"><span class="cfg-label-fixed">Signal Quality:</span>
+              <div style="flex:1; background:#e2e8f0; height:12px; border-radius:6px; overflow:hidden;">
+                <div style="background:#22c55e; width:95%; height:100%;"></div>
+              </div>
+              <span style="margin-left:6px; font-weight:700;">95%</span>
+            </div>
+            <div class="cfg-row-flex"><span class="cfg-label-fixed">IP Assigned:</span><span>${dev.ip || '192.168.0.101'}</span></div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('btn-back-desktop').addEventListener('click', () => this.renderDesktopTab(dev));
+
+    document.getElementById('wtab-site').addEventListener('click', () => {
+      document.getElementById('wtab-info').classList.remove('active');
+      document.getElementById('wtab-site').classList.add('active');
+      document.getElementById('wtab-body').innerHTML = `
+        <div style="max-width:500px;">
+          <h4 style="font-size:12px; margin-bottom:8px;">Available Wireless Networks</h4>
+          <table class="cfg-table" style="margin-bottom:12px;">
+            <thead><tr><th>SSID</th><th>Channel</th><th>Signal</th><th>Security</th></tr></thead>
+            <tbody>
+              <tr class="selected"><td>Default</td><td>6</td><td>95%</td><td>WPA2-Personal</td></tr>
+              <tr><td>Home-Office</td><td>11</td><td>60%</td><td>WPA2-Personal</td></tr>
+              <tr><td>Guest-WiFi</td><td>1</td><td>45%</td><td>Disabled</td></tr>
+            </tbody>
+          </table>
+          <div style="display:flex; gap:10px; align-items:center;">
+            <button class="cfg-action-button" style="padding:4px 16px; font-weight:700;">Connect</button>
+            <button class="cfg-action-button" style="padding:4px 16px;">Refresh</button>
+          </div>
+        </div>
+      `;
+    });
+
+    document.getElementById('wtab-info').addEventListener('click', () => this.renderPCPCWireless(dev));
+  }
+
+  renderPCEmail(dev) {
+    this.modalContent.innerHTML = `
+      <div class="desktop-subapp-view">
+        <div class="desktop-subapp-topbar">
+          <div class="desktop-subapp-title">
+            <img src="assets/desktop/EmailClient.png" width="16" height="16">
+            <span>Email Client</span>
+          </div>
+          <button class="desktop-btn-back" id="btn-back-desktop">◄ Back to Desktop</button>
+        </div>
+        <div style="padding:16px; max-width:480px;">
+          <div class="cfg-row-flex"><span class="cfg-label-fixed">To:</span><input type="text" class="cfg-input-text" placeholder="user@cisco.com" value="admin@cisco.com"></div>
+          <div class="cfg-row-flex"><span class="cfg-label-fixed">Subject:</span><input type="text" class="cfg-input-text" placeholder="Subject" value="Network Verification Report"></div>
+          <textarea style="width:100%; height:120px; border:1px solid #7f9db9; padding:6px; font-family:sans-serif; font-size:11px; margin-top:6px;">Hello,\n\nNetwork connectivity from ${dev.name} to Default Gateway is active and verified.\n\nRegards,\nNetwork Admin</textarea>
+          <div style="display:flex; gap:10px; margin-top:10px;">
+            <button class="cfg-action-button" id="btn-email-send" style="padding:4px 18px; font-weight:700;">Send</button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('btn-back-desktop').addEventListener('click', () => this.renderDesktopTab(dev));
+    document.getElementById('btn-email-send').addEventListener('click', () => {
+      alert('Email sent successfully via SMTP server.');
+      this.renderDesktopTab(dev);
+    });
+  }
+
+  renderPCFirewall(dev, isIpv6 = false) {
+    this.modalContent.innerHTML = `
+      <div class="desktop-subapp-view">
+        <div class="desktop-subapp-topbar">
+          <div class="desktop-subapp-title">
+            <img src="${isIpv6 ? 'assets/desktop/IPv6Firewall.png' : 'assets/desktop/IPv4Firewall.png'}" width="16" height="16">
+            <span>${isIpv6 ? 'IPv6 Firewall' : 'Firewall / Security Rules'}</span>
+          </div>
+          <button class="desktop-btn-back" id="btn-back-desktop">◄ Back to Desktop</button>
+        </div>
+        <div style="padding:16px; max-width:540px;">
+          <div class="cfg-row-flex">
+            <span style="font-size:11px; width:60px;">Action:</span>
+            <select class="cfg-input-text" style="max-width:80px;"><option>Allow</option><option>Deny</option></select>
+            <span style="font-size:11px; width:60px; margin-left:10px;">Protocol:</span>
+            <select class="cfg-input-text" style="max-width:80px;"><option>ICMP</option><option>IP</option><option>TCP</option><option>UDP</option></select>
+          </div>
+          <div class="cfg-row-flex">
+            <span style="font-size:11px; width:60px;">Remote IP:</span>
+            <input type="text" class="cfg-input-text" value="0.0.0.0">
+            <span style="font-size:11px; width:60px; margin-left:10px;">Mask:</span>
+            <input type="text" class="cfg-input-text" value="255.255.255.255">
+            <button class="cfg-action-button" style="margin-left:10px; padding:3px 14px;">Add</button>
+          </div>
+          <table class="cfg-table" style="margin-top:12px;">
+            <thead><tr><th>Action</th><th>Protocol</th><th>Remote IP</th><th>Wildcard</th></tr></thead>
+            <tbody>
+              <tr><td>Allow</td><td>IP</td><td>0.0.0.0</td><td>255.255.255.255</td></tr>
+              <tr><td>Deny</td><td>ICMP</td><td>10.0.0.0</td><td>0.255.255.255</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('btn-back-desktop').addEventListener('click', () => this.renderDesktopTab(dev));
+  }
+
+  renderPCTftp(dev) {
+    this.modalContent.innerHTML = `
+      <div class="desktop-subapp-view">
+        <div class="desktop-subapp-topbar">
+          <div class="desktop-subapp-title">
+            <img src="assets/desktop/TftpService.png" width="16" height="16">
+            <span>TFTP Service File Manager</span>
+          </div>
+          <button class="desktop-btn-back" id="btn-back-desktop">◄ Back to Desktop</button>
+        </div>
+        <div style="padding:16px; max-width:500px;">
+          <h4 style="font-size:12px; margin-bottom:8px;">TFTP Repository Files</h4>
+          <table class="cfg-table">
+            <thead><tr><th>File Name</th><th>Size</th><th>Action</th></tr></thead>
+            <tbody>
+              <tr><td>c2900-universalk9-mz.SPA.151-4.M4.bin</td><td>33.5 MB</td><td>[Download]</td></tr>
+              <tr><td>running-config.txt</td><td>2.1 KB</td><td>[Download]</td></tr>
+              <tr><td>vlan.dat</td><td>612 B</td><td>[Download]</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('btn-back-desktop').addEventListener('click', () => this.renderDesktopTab(dev));
+  }
+
+  renderPCTrafficGen(dev) {
+    this.modalContent.innerHTML = `
+      <div class="desktop-subapp-view">
+        <div class="desktop-subapp-topbar">
+          <div class="desktop-subapp-title">
+            <img src="assets/desktop/trafficGenerator.png" width="16" height="16">
+            <span>Traffic Generator</span>
+          </div>
+          <button class="desktop-btn-back" id="btn-back-desktop">◄ Back to Desktop</button>
+        </div>
+        <div style="padding:16px; max-width:480px;">
+          <div class="cfg-row-flex"><span class="cfg-label-fixed">Destination IP:</span><input type="text" class="cfg-input-text" value="192.168.1.1"></div>
+          <div class="cfg-row-flex"><span class="cfg-label-fixed">Packet Size:</span><input type="number" class="cfg-input-text" value="64" style="max-width:80px;"> bytes</div>
+          <div class="cfg-row-flex"><span class="cfg-label-fixed">Rate (pps):</span><input type="number" class="cfg-input-text" value="10" style="max-width:80px;"></div>
+          <div style="display:flex; gap:10px; margin-top:14px;">
+            <button class="cfg-action-button" style="padding:4px 18px; font-weight:700;">Start Traffic Generation</button>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('btn-back-desktop').addEventListener('click', () => this.renderDesktopTab(dev));
+  }
+
+  renderGenericApp(dev, name, icon) {
+    this.modalContent.innerHTML = `
+      <div class="desktop-subapp-view">
+        <div class="desktop-subapp-topbar">
+          <div class="desktop-subapp-title">
+            ${icon ? `<img src="${icon}" width="16" height="16">` : ''}
+            <span>${name}</span>
+          </div>
+          <button class="desktop-btn-back" id="btn-back-desktop">◄ Back to Desktop</button>
+        </div>
+        <div style="text-align:center; padding:50px;">
+          <img src="${icon}" style="max-width:64px; max-height:64px; margin-bottom:12px;">
+          <h3 style="font-size:14px; color:#1e293b;">${name} Service</h3>
+          <p style="font-size:12px; color:#64748b; margin-top:6px;">Status: Service active and waiting for network events on ${dev.name}.</p>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('btn-back-desktop').addEventListener('click', () => this.renderDesktopTab(dev));
   }
 
   renderConfigTab(dev) {
@@ -1750,11 +2525,8 @@ class AppController {
             <div class="config-ios-commands-box" id="cfg-ios-commands-box">${dev._iosCommandsLog}</div>
           </div>
         ` : `
-          <div style="height: 120px; background: #ffffff; border: 1px solid #a0a0a0; margin-top: 4px;"></div>
+          <div style="height: 120px; background: #ffffff; border: 1px solid #808080; margin-top: 4px;"></div>
         `}
-        <div class="config-bottom-checkbox-bar">
-          <label style="cursor: pointer;"><input type="checkbox"> Top</label>
-        </div>
       </div>
     `;
 
@@ -1788,7 +2560,7 @@ class AppController {
     if (inDisplayName) {
       inDisplayName.addEventListener('change', (e) => {
         dev.name = e.target.value.trim();
-        this.modalTitle.innerText = `${dev.name} (${dev.model || dev.type.toUpperCase()})`;
+        this.modalTitle.innerText = dev.name;
         this.topology.emit('topology-changed');
       });
     }
@@ -1800,7 +2572,7 @@ class AppController {
         dev.hostname = newName;
         appendIosCmd(`${oldName}(config)#hostname ${newName}`);
         dev.name = newName;
-        this.modalTitle.innerText = `${dev.name} (${dev.model || dev.type.toUpperCase()})`;
+        this.modalTitle.innerText = dev.name;
         this.topology.emit('topology-changed');
       });
     }

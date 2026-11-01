@@ -321,20 +321,22 @@
 
   <!-- Device Properties & CLI Modal -->
   <div id="pt-device-modal" class="pt-modal-overlay" style="display: none;">
-    <div class="pt-modal-window">
+    <div class="pt-modal-window" id="pt-modal-win">
       
-      <!-- Modal Titlebar with Cisco Device Icon -->
-      <div class="modal-win-titlebar">
+      <!-- Modal Titlebar with Cisco Device Icon & Windows Controls (Matches Screenshots 3, 4, 5, 6, 7) -->
+      <div class="modal-win-titlebar" id="modal-titlebar">
         <div class="modal-win-title-left">
-          <img src="assets/logical/iRouter@2x.png" id="modal-icon" alt="Device" class="modal-icon">
-          <span id="modal-title">Router0 (2911)</span>
+          <img src="assets/pt_icon.ico" id="modal-icon" alt="Device" class="modal-icon">
+          <span id="modal-title">Router0</span>
         </div>
         <div class="modal-win-controls">
-          <button class="modal-ctrl-btn" id="modal-close">&times;</button>
+          <button class="modal-ctrl-btn modal-btn-min" id="modal-minimize" title="Minimize">&#x2014;</button>
+          <button class="modal-ctrl-btn modal-btn-max" id="modal-maximize" title="Maximize">&#x25A2;</button>
+          <button class="modal-ctrl-btn modal-btn-close" id="modal-close" title="Close">&#x2715;</button>
         </div>
       </div>
 
-      <!-- Tab Strip: Physical | Config | CLI | Desktop -->
+      <!-- Tab Strip: Physical | Config | CLI / GUI / Desktop | Programming | Attributes -->
       <div class="modal-tab-strip" id="modal-tabs">
         <!-- Injected dynamically -->
       </div>
@@ -342,6 +344,13 @@
       <!-- Tab Content Area -->
       <div class="modal-tab-view" id="modal-content">
         <!-- Content injected dynamically -->
+      </div>
+
+      <!-- Modal Footer with "Top" Checkbox (Matches Screenshots 3, 4, 5, 6, 7 Exactly) -->
+      <div class="modal-win-footer">
+        <label class="modal-top-label">
+          <input type="checkbox" id="modal-top-chk"> Top
+        </label>
       </div>
 
     </div>
