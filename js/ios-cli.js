@@ -8,7 +8,7 @@
  * engine.js so the simulation reflects them immediately.
  */
 
-import { IPUtils, parseIfaceRef, shortIfaceName, abbrevIfaceName, NetworkTopology } from './engine.js';
+import { IPUtils, parseIfaceRef, shortIfaceName, abbrevIfaceName, NetworkTopology, isRouting } from './engine.js';
 
 /* ========================================================================== */
 /* Grammar helpers                                                            */
@@ -78,6 +78,8 @@ function md5ish(pw) {
 function iosImage(dev) {
   const m = String(dev.model);
   if (dev.type === 'switch') {
+    if (m.startsWith('3650')) return { family: 'CAT3K_CAA', img: 'CAT3K_CAA-UNIVERSALK9-M', ver: '16.3.2', file: 'cat3k_caa-universalk9.16.03.02.SPA.bin', proc: 'WS-C3650-24PS', mem: '4194304K' };
+    if (m.startsWith('IE')) return { family: 'IE2000', img: 'IE2000-UNIVERSALK9-M', ver: '15.2(4)EA', file: 'ie2000-universalk9-mz.152-4.EA.bin', proc: 'IE-2000-8TC-G-B', mem: '262144K' };
     if (m.startsWith('2960')) return { family: 'C2960', img: 'C2960-LANBASEK9-M', ver: '15.0(2)SE4', file: 'c2960-lanbasek9-mz.150-2.SE4.bin', proc: 'WS-C2960-24TT-L', mem: '65536K' };
     if (m.startsWith('3560')) return { family: 'C3560', img: 'C3560-IPSERVICESK9-M', ver: '12.2(37)SE1', file: 'c3560-ipservicesk9-mz.122-37.SE1.bin', proc: 'WS-C3560-24PS', mem: '122880K' };
     if (m.startsWith('2950')) return { family: 'C2950', img: 'C2950-I6Q4L2-M', ver: '12.1(22)EA4', file: 'c2950-i6q4l2-mz.121-22.EA4.bin', proc: 'WS-C2950-24', mem: '19911K' };
@@ -85,6 +87,7 @@ function iosImage(dev) {
   }
   if (m.startsWith('19')) return { family: 'C1900', img: 'C1900-UNIVERSALK9-M', ver: '15.1(4)M4', file: 'c1900-universalk9-mz.SPA.151-1.M4.bin', proc: `CISCO${m}/K9`, mem: '491520K/32768K' };
   if (m.startsWith('29')) return { family: 'C2900', img: 'C2900-UNIVERSALK9-M', ver: '15.1(4)M4', file: 'c2900-universalk9-mz.SPA.151-4.M4.bin', proc: `CISCO${m}/K9`, mem: '491520K/32768K' };
+  if (m === '1841') return { family: '1841', img: 'C1841-ADVIPSERVICESK9-M', ver: '12.4(15)T1', file: 'c1841-advipservicesk9-mz.124-15.T1.bin', proc: 'Cisco 1841', mem: '114688K/16384K' };
   if (m.startsWith('28')) return { family: 'C2800', img: 'C2800NM-ADVIPSERVICESK9-M', ver: '12.4(15)T1', file: 'c2800nm-advipservicesk9-mz.124-15.T1.bin', proc: `Cisco ${m}`, mem: '249856K/12288K' };
   if (m.startsWith('26')) return { family: 'C2600', img: 'C2600-I-M', ver: '12.2(28)', file: 'c2600-i-mz.122-28.bin', proc: `Cisco ${m}`, mem: '60416K/5120K' };
   if (m.startsWith('43')) return { family: 'ISR4300', img: 'X86_64_LINUX_IOSD-UNIVERSALK9-M', ver: '16.9.4', file: 'isr4300-universalk9.16.09.04.SPA.bin', proc: `ISR${m}/K9`, mem: '1795979K/6147K' };
@@ -149,6 +152,7 @@ export class CiscoIOSCLI {
   get dev() { return this.device; }
   get isRouter() { return this.device.type === 'router'; }
   get isSwitch() { return this.device.type === 'switch'; }
+  get isL3() { return this.isRouter || this.device.isMultilayer === true; }
 
   getBanner() { return this.transcript; }
 
@@ -581,11 +585,13 @@ Press RETURN to get started!
   initTrees() {
     const isR = (c) => c.isRouter;
     const isS = (c) => c.isSwitch;
+    const isL3 = (c) => c.isL3;
+    const isML = (c) => c.isSwitch && c.device.isMultilayer === true;
 
     /* ---------------------------- show ---------------------------------- */
     const showTree = (priv) => {
       const t = [
-        kw('access-lists', 'List access lists', [], function () { return this.showAccessLists(); }, isR),
+        kw('access-lists', 'List access lists', [], function () { return this.showAccessLists(); }, isL3),
         kw('arp', 'Arp table', [], function () { return this.showArp(); }),
         kw('cdp', 'CDP information', [
           kw('neighbors', 'CDP neighbor entries', [kw('detail', 'Show detailed information', [], function () { return this.showCdp(true); })], function () { return this.showCdp(false); })
@@ -602,16 +608,16 @@ Press RETURN to get started!
           kw('interface', 'IP interface status and configuration', [
             kw('brief', 'Brief summary of IP status and configuration', [], function () { return this.showIpIntBrief(); })
           ], function () { return this.showIpIntBrief(); }),
-          kw('route', 'IP routing table', [], function () { return this.showIpRoute(); }, isR),
-          kw('protocols', 'IP routing protocol process parameters and statistics', [], function () { return this.showIpProtocols(); }, isR),
+          kw('route', 'IP routing table', [], function () { return this.showIpRoute(); }, isL3),
+          kw('protocols', 'IP routing protocol process parameters and statistics', [], function () { return this.showIpProtocols(); }, isL3),
           kw('dhcp', 'Show items in the DHCP database', [
             kw('binding', 'DHCP address bindings', [], function () { return this.showDhcpBinding(); }),
             kw('pool', 'DHCP pools information', [], function () { return this.showDhcpPool(); })
-          ], null, isR),
+          ], null, isL3),
           kw('ospf', 'OSPF information', [
             kw('neighbor', 'Neighbor list', [], function () { return this.showOspfNeighbor(); })
-          ], function () { return this.showOspf(); }, isR),
-          kw('rip', 'IP RIP show commands', [kw('database', 'IP RIP database', [], function () { return this.showRipDb(); })], null, isR)
+          ], function () { return this.showOspf(); }, isL3),
+          kw('rip', 'IP RIP show commands', [kw('database', 'IP RIP database', [], function () { return this.showRipDb(); })], null, isL3)
         ]),
         kw('mac-address-table', 'MAC forwarding table', [], function () { return this.showMac(); }, isS),
         kw('mac', 'MAC configuration', [kw('address-table', 'MAC forwarding table', [], function () { return this.showMac(); })], null, isS),
@@ -671,9 +677,9 @@ Press RETURN to get started!
         kw('ip', 'IP', [
           kw('route', 'Delete route table entries', [kw('*', 'Delete all routes', [], function () { this._changed(); return ''; })]),
           kw('dhcp', 'Delete items from the DHCP database', [kw('binding', 'DHCP bindings', [kw('*', 'Clear all automatic bindings', [], function () { for (const p of this.device.dhcpPools) p.leases = {}; return ''; })])])
-        ], null, isR),
+        ], null, isL3),
         kw('mac-address-table', 'MAC forwarding table', [kw('dynamic', 'dynamic entry type', [], function () { this.device.macTable.clear(); return ''; })], function () { this.device.macTable.clear(); return ''; }, isS),
-        kw('access-list', 'Clear access list statistical information', [kw('counters', 'Clear access list counters', [], function () { for (const r of Object.values(this.device.acls || {}).flat()) r.matches = 0; return ''; })], null, isR)
+        kw('access-list', 'Clear access list statistical information', [kw('counters', 'Clear access list counters', [], function () { for (const r of Object.values(this.device.acls || {}).flat()) r.matches = 0; return ''; })], null, isL3)
       ]),
       kw('clock', 'Manage the system clock', [kw('set', 'Set the time and date', [arg('line', 'hh:mm:ss', 'Current Time', [], () => '')])]),
       kw('configure', 'Enter configuration mode', [
@@ -746,7 +752,7 @@ Press RETURN to get started!
     ], negate ? function (v) { delete this.device.acls[v[0]]; return ''; } : null, { min: 1, max: 199 });
 
     const CONFIG = [
-      kw('access-list', 'Add an access list entry', [aclArgs(false)], null, isR),
+      kw('access-list', 'Add an access list entry', [aclArgs(false)], null, isL3),
       kw('banner', 'Define a login banner', [kw('motd', 'Set Message of the Day banner', [arg('line', 'LINE', 'c banner-text c, where c is a delimiting character', [], function (v) {
         const s = v[0];
         const d = s[0];
@@ -789,14 +795,20 @@ Press RETURN to get started!
             this.ctx = { pool: p };
             return '';
           })])
-        ], null, isR),
+        ], null, isL3),
         kw('domain-lookup', 'Enable IP Domain Name System hostname translation', [], function () { this.device.noDomainLookup = false; return ''; }),
         kw('domain-name', 'Define the default domain name', [arg('word', 'WORD', 'Default domain name', [], function (v) { this.device.domainName = v[0]; return ''; })]),
         kw('route', 'Establish static routes', [arg('ip', 'A.B.C.D', 'Destination prefix', [arg('ip', 'A.B.C.D', 'Destination prefix mask', [
           arg('ip', 'A.B.C.D', 'Forwarding router\'s address', [arg('num', '<1-255>', 'Distance metric for this route', [], function (v) { return this.cmdIpRoute(v[0], v[1], v[2], null, v[3]); }, { min: 1, max: 255 })], function (v) { return this.cmdIpRoute(v[0], v[1], v[2], null); }),
           arg('iface', 'Interface', 'Forwarding interface', [arg('ip', 'A.B.C.D', 'Forwarding router\'s address', [], function (v) { return this.cmdIpRoute(v[0], v[1], v[3], v[2]); })], function (v) { return this.cmdIpRoute(v[0], v[1], null, v[2]); })
-        ])])], null, isR),
-        kw('routing', 'Enable IP routing', [], () => '')
+        ])])], null, isL3),
+        kw('routing', 'Enable IP routing', [], function () {
+          if (!this.isSwitch) return '';
+          if (!this.device.isMultilayer) return '% Invalid input detected at \'^\' marker.';
+          this.device.ipRouting = true;
+          this._changed();
+          return '';
+        })
       ]),
       kw('line', 'Configure a terminal line', [
         kw('console', 'Primary terminal line', [arg('num', '<0-0>', 'First Line number', [], function () { this.mode = 'CONFIG_LINE'; this.ctx = { line: 'lineCon' }; return ''; }, { min: 0, max: 0 })]),
@@ -804,7 +816,7 @@ Press RETURN to get started!
         kw('aux', 'Auxiliary line', [arg('num', '<0-0>', 'First Line number', [], function () { this.mode = 'CONFIG_LINE'; this.ctx = { line: 'lineAux' }; return ''; }, { min: 0, max: 0 })], null, isR)
       ]),
       kw('no', 'Negate a command or set its defaults', [
-        kw('access-list', 'Add an access list entry', [aclArgs(true)], null, isR),
+        kw('access-list', 'Add an access list entry', [aclArgs(true)], null, isL3),
         kw('banner', 'Define a login banner', [kw('motd', 'Set Message of the Day banner', [], function () { this.device.bannerMotd = ''; return ''; })]),
         kw('enable', 'Modify enable password parameters', [
           kw('password', 'Assign the privileged level password', [], function () { this.device.enablePassword = ''; return ''; }),
@@ -823,17 +835,18 @@ Press RETURN to get started!
           kw('dhcp', 'Configure DHCP server and relay parameters', [
             kw('pool', 'Configure DHCP address pools', [arg('word', 'WORD', 'Pool name', [], function (v) { this.device.dhcpPools = this.device.dhcpPools.filter(p => p.name !== v[0]); return ''; })]),
             kw('excluded-address', 'Prevent DHCP from assigning certain addresses', [arg('ip', 'A.B.C.D', 'Low IP address', [arg('ip', 'A.B.C.D', 'High IP address', [], function (v) { this.device.dhcpExcluded = this.device.dhcpExcluded.filter(x => !(x.start === v[0] && x.end === v[1])); return ''; })], function (v) { this.device.dhcpExcluded = this.device.dhcpExcluded.filter(x => x.start !== v[0]); return ''; })])
-          ], null, isR),
+          ], null, isL3),
           kw('domain-lookup', 'Enable IP Domain Name System hostname translation', [], function () { this.device.noDomainLookup = true; return ''; }),
+          kw('routing', 'Enable IP routing', [], function () { this.device.ipRouting = false; this._changed(); return ''; }, isML),
           kw('route', 'Establish static routes', [arg('ip', 'A.B.C.D', 'Destination prefix', [arg('ip', 'A.B.C.D', 'Destination prefix mask', [
             arg('ip', 'A.B.C.D', 'Forwarding router\'s address', [], function (v) { return this.cmdNoIpRoute(v[0], v[1], v[2]); }),
             arg('iface', 'Interface', 'Forwarding interface', [], function (v) { return this.cmdNoIpRoute(v[0], v[1], v[2]); })
-          ], function (v) { return this.cmdNoIpRoute(v[0], v[1], null); })])], null, isR)
+          ], function (v) { return this.cmdNoIpRoute(v[0], v[1], null); })])], null, isL3)
         ]),
         kw('router', 'Enable a routing process', [
           kw('rip', 'Routing Information Protocol (RIP)', [], function () { Object.assign(this.device, { ripEnabled: false, ripNetworks: [], ripVersion: 1, ripAutoSummary: true, ripPassive: [], ripDefaultOriginate: false }); this._changed(); return ''; }),
           kw('ospf', 'Open Shortest Path First (OSPF)', [arg('num', '<1-65535>', 'Process ID', [], function () { this.device.ospf = null; this._changed(); return ''; }, { min: 1, max: 65535 })])
-        ], null, isR),
+        ], null, isL3),
         kw('service', 'Modify use of network based services', [kw('password-encryption', 'Encrypt system passwords', [], function () { this.device.servicePasswordEncryption = false; return ''; })]),
         kw('username', 'Establish User Name Authentication', [arg('word', 'WORD', 'User name', [], function (v) { this.device.users = (this.device.users || []).filter(u => u.name !== v[0]); return ''; })]),
         kw('vlan', 'Vlan commands', [arg('num', '<1-4094>', 'ISL VLAN IDs 1-1005', [], function (v) {
@@ -857,7 +870,7 @@ Press RETURN to get started!
           this.ctx = { proto: 'rip' };
           return '';
         })
-      ], null, isR),
+      ], null, isL3),
       kw('service', 'Modify use of network based services', [kw('password-encryption', 'Encrypt system passwords', [], function () { this.device.servicePasswordEncryption = true; return ''; })]),
       kw('spanning-tree', 'Spanning Tree Subsystem', [kw('mode', 'Spanning tree operating mode', [
         kw('pvst', 'Per-Vlan spanning tree mode', [], () => ''),
@@ -886,8 +899,10 @@ Press RETURN to get started!
       this._changed();
       return out.trimEnd();
     };
-    const physSwitchPort = (c) => c.isSwitch && !c.device.isHub && c._ifaceList().every(i => i.isDataPort);
-    const l3Capable = (c) => c.isRouter || c._ifaceList().every(i => i.vlanId != null);
+    const physSwitchPort = (c) => c.isSwitch && !c.device.isHub && c._ifaceList().every(i => i.isDataPort && !i.routed);
+    const anySwitchPort = (c) => c.isSwitch && !c.device.isHub && c._ifaceList().every(i => i.isDataPort);
+    const l3Capable = (c) => c.isRouter || c._ifaceList().every(i => i.vlanId != null || i.routed);
+    const mlPort = (c) => isML(c) && c._ifaceList().every(i => i.isDataPort);
     const subIf = (c) => c.isRouter && c._ifaceList().some(i => i.parentName);
 
     const setIp = forEachIf(function (i, v) {
@@ -970,7 +985,7 @@ Press RETURN to get started!
         kw('access-group', 'Specify access control for packets', [arg('num', '<1-199>', 'IP access list (standard or extended)', [
           kw('in', 'inbound packets', [], forEachIf(function (i, v) { i.aclIn = v[0]; })),
           kw('out', 'outbound packets', [], forEachIf(function (i, v) { i.aclOut = v[0]; }))
-        ], null, { min: 1, max: 199 })], null, isR),
+        ], null, { min: 1, max: 199 })], null, isL3),
         kw('address', 'Set the IP address of an interface', [
           arg('ip', 'A.B.C.D', 'IP address', [arg('ip', 'A.B.C.D', 'IP subnet mask', [], setIp)]),
           kw('dhcp', 'IP Address negotiated via DHCP', [], forEachIf(function (i) {
@@ -980,8 +995,8 @@ Press RETURN to get started!
             return `%DHCP-6-ADDRESS_ASSIGN: Interface ${i.name} assigned DHCP address ${lease.ip}, mask ${lease.mask}, hostname ${this.device.hostname}`;
           }))
         ], null, l3Capable),
-        kw('helper-address', 'Specify a destination address for UDP broadcasts', [arg('ip', 'A.B.C.D', 'IP destination address', [], forEachIf(function (i, v) { i.helperAddress = v[0]; }))], null, isR),
-        kw('ospf', 'OSPF interface commands', [kw('cost', 'Interface cost', [arg('num', '<1-65535>', 'Cost', [], forEachIf(function (i, v) { i.ospfCost = v[0]; }), { min: 1, max: 65535 })])], null, isR)
+        kw('helper-address', 'Specify a destination address for UDP broadcasts', [arg('ip', 'A.B.C.D', 'IP destination address', [], forEachIf(function (i, v) { i.helperAddress = v[0]; }))], null, isL3),
+        kw('ospf', 'OSPF interface commands', [kw('cost', 'Interface cost', [arg('num', '<1-65535>', 'Cost', [], forEachIf(function (i, v) { i.ospfCost = v[0]; }), { min: 1, max: 65535 })])], null, isL3)
       ]),
       kw('no', 'Negate a command or set its defaults', [
         kw('description', 'Interface specific description', [], forEachIf(function (i) { i.description = ''; })),
@@ -989,9 +1004,9 @@ Press RETURN to get started!
           kw('access-group', 'Specify access control for packets', [arg('num', '<1-199>', 'IP access list', [
             kw('in', 'inbound packets', [], forEachIf(function (i) { i.aclIn = null; })),
             kw('out', 'outbound packets', [], forEachIf(function (i) { i.aclOut = null; }))
-          ], null, { min: 1, max: 199 })], null, isR),
+          ], null, { min: 1, max: 199 })], null, isL3),
           kw('address', 'Set the IP address of an interface', [], forEachIf(function (i) { i.ip = ''; i.dhcpClient = false; })),
-          kw('helper-address', 'Specify a destination address for UDP broadcasts', [], forEachIf(function (i) { i.helperAddress = ''; }), isR)
+          kw('helper-address', 'Specify a destination address for UDP broadcasts', [], forEachIf(function (i) { i.helperAddress = ''; }), isL3)
         ]),
         kw('shutdown', 'Shutdown the selected interface', [], forEachIf(function (i) {
           const was = i.isPhysicalUp;
@@ -1005,7 +1020,12 @@ Press RETURN to get started!
             kw('native', 'Set trunking native characteristics', [kw('vlan', 'Set native VLAN', [], forEachIf(function (i) { i.nativeVlan = 1; }))]),
             kw('allowed', 'Set allowed VLAN characteristics', [kw('vlan', 'Set allowed VLANs', [], forEachIf(function (i) { i.allowedVlans = 'all'; }))])
           ])
-        ], null, physSwitchPort)
+        ], forEachIf(function (i) {
+          if (!this.device.isMultilayer) return '% Invalid input detected at \'^\' marker.';
+          i.routed = true;
+          i.mode = 'access';
+          return '';
+        }), anySwitchPort)
       ]),
       kw('shutdown', 'Shutdown the selected interface', [], forEachIf(function (i) {
         const was = i.isPhysicalUp;
@@ -1037,6 +1057,9 @@ Press RETURN to get started!
             kw('desirable', 'Set trunking mode dynamic negotiation parameter to DESIRABLE', [], forEachIf(function (i) { i.mode = 'trunk'; }))
           ]),
           kw('trunk', 'Set trunking mode to TRUNK unconditionally', [], forEachIf(function (i) {
+            if (String(this.device.model).startsWith('3560') && i.trunkEncap !== 'dot1q') {
+              return 'Command rejected: An interface whose trunk encapsulation is "Auto" can not be configured to "trunk" mode.';
+            }
             const was = i.mode;
             i.mode = 'trunk';
             if (was !== 'trunk' && i.isPhysicalUp) {
@@ -1049,10 +1072,14 @@ Press RETURN to get started!
         kw('port-security', 'Security related command', [], () => ''),
         kw('trunk', 'Set trunking characteristics of the interface', [
           kw('allowed', 'Set allowed VLAN characteristics when interface is in trunking mode', [kw('vlan', 'Set allowed VLANs when interface is in trunking mode', [arg('line', 'WORD', 'VLAN IDs of the allowed VLANs when this port is in trunking mode', [], allowed)])]),
-          kw('encapsulation', 'Set trunking encapsulation when interface is in trunking mode', [kw('dot1q', 'Interface uses only 802.1q trunking encapsulation when trunking', [], () => '')]),
+          kw('encapsulation', 'Set trunking encapsulation when interface is in trunking mode', [kw('dot1q', 'Interface uses only 802.1q trunking encapsulation when trunking', [], forEachIf(function (i) { i.trunkEncap = 'dot1q'; }))], null, isML),
           kw('native', 'Set trunking native characteristics when interface is in trunking mode', [kw('vlan', 'Set native VLAN when interface is in trunking mode', [arg('num', '<1-4094>', 'VLAN ID of the native VLAN when this port is in trunking mode', [], forEachIf(function (i, v) { i.nativeVlan = v[0]; }), { min: 1, max: 4094 })])])
         ])
-      ], null, physSwitchPort)
+      ], function () {
+        for (const i of this._ifaceList()) { i.routed = false; i.ip = ''; }
+        this._changed();
+        return '';
+      }, anySwitchPort)
     ];
 
     /* ---------------------------- routing protocol ----------------------- */
@@ -1497,6 +1524,9 @@ File  Length   Name/status
 
   showIpRoute() {
     const d = this.device;
+    if (this.isSwitch && !isRouting(d)) {
+      return `Default gateway is ${d.defaultGateway || 'not set'}\n\nHost               Gateway           Last Use    Total Uses  Interface\nICMP redirect cache is empty`;
+    }
     const routes = d.getRoutes(this.topology);
     const codes = `Codes: L - local, C - connected, S - static, R - RIP, M - mobile, B - BGP
        D - EIGRP, EX - EIGRP external, O - OSPF, IA - OSPF inter area
@@ -1642,7 +1672,7 @@ File  Length   Name/status
   }
 
   _vlanPorts(id) {
-    return this.device.interfaces.filter(i => i.isDataPort && i.mode !== 'trunk' && i.accessVlan === id).map(i => shortIfaceName(i.name));
+    return this.device.interfaces.filter(i => i.isDataPort && !i.routed && i.mode !== 'trunk' && i.accessVlan === id).map(i => shortIfaceName(i.name));
   }
 
   showVlanBrief() {
@@ -1725,7 +1755,7 @@ File  Length   Name/status
     if (d.enableSecret) L.push(`enable secret 5 ${md5ish(d.enableSecret)}`);
     if (d.enablePassword) L.push(`enable password ${this._pw(d.enablePassword)}`);
     bang();
-    if (this.isRouter) {
+    if (this.isL3) {
       for (const x of d.dhcpExcluded) L.push(`ip dhcp excluded-address ${x.start}${x.end && x.end !== x.start ? ' ' + x.end : ''}`);
       if (d.dhcpExcluded.length) bang();
       for (const p of d.dhcpPools) {
@@ -1736,7 +1766,8 @@ File  Length   Name/status
       }
       bang();
       bang();
-      L.push('ip cef', 'no ipv6 cef');
+      if (this.isRouter) L.push('ip cef', 'no ipv6 cef');
+      else if (d.ipRouting) L.push('ip routing');
     }
     bang();
     if (d.noDomainLookup) L.push('no ip domain-lookup');
@@ -1761,7 +1792,15 @@ File  Length   Name/status
       L.push(`interface ${i.name}`);
       if (i.description) L.push(` description ${i.description}`);
       if (i.parentName && i.encapVlan) L.push(` encapsulation dot1Q ${i.encapVlan}`);
-      if (this.isSwitch && i.vlanId == null) {
+      if (this.isSwitch && i.vlanId == null && i.routed) {
+        L.push(' no switchport');
+        if (i.ip) L.push(` ip address ${i.ip} ${i.mask}`);
+        else L.push(' no ip address');
+        if (i.helperAddress) L.push(` ip helper-address ${i.helperAddress}`);
+        if (i.aclIn != null) L.push(` ip access-group ${i.aclIn} in`);
+        if (i.aclOut != null) L.push(` ip access-group ${i.aclOut} out`);
+      } else if (this.isSwitch && i.vlanId == null) {
+        if (i.trunkEncap) L.push(' switchport trunk encapsulation dot1q');
         if (i.accessVlan !== 1 && i.mode !== 'trunk') L.push(` switchport access vlan ${i.accessVlan}`);
         if (i.nativeVlan !== 1) L.push(` switchport trunk native vlan ${i.nativeVlan}`);
         if (i.allowedVlans !== 'all') L.push(` switchport trunk allowed vlan ${i.allowedVlans}`);
@@ -1787,6 +1826,8 @@ File  Length   Name/status
     if (this.isRouter) {
       L.push('interface Vlan1', ' no ip address', ' shutdown');
       bang();
+    }
+    if (this.isL3) {
       if (d.ospf) {
         L.push(`router ospf ${d.ospf.processId}`);
         if (d.ospf.routerId) L.push(` router-id ${d.ospf.routerId}`);
@@ -1812,7 +1853,8 @@ File  Length   Name/status
       bang();
       for (const [num, rules] of Object.entries(d.acls).sort((a, b) => a[0] - b[0])) for (const r of rules) L.push(`access-list ${num} ${r.text}`);
       bang();
-    } else if (d.defaultGateway) {
+    }
+    if (this.isSwitch && d.defaultGateway) {
       L.push(`ip default-gateway ${d.defaultGateway}`);
       bang();
     }

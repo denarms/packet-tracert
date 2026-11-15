@@ -197,7 +197,7 @@ export class DeviceInterface {
     if (this.type === 'Loopback') return true;
     if (this.parentName) return !!this.parent && this.parent.isLinkUp;
     if (this.vlanId != null) return dev.hasVlan(this.vlanId) && dev.interfaces.some(p =>
-      p.isDataPort && p.isPhysicalUp && (p.mode === 'trunk' ? p.isVlanAllowed(this.vlanId) : p.accessVlan === this.vlanId));
+      p.isDataPort && !p.routed && p.isPhysicalUp && (p.mode === 'trunk' ? p.isVlanAllowed(this.vlanId) : p.accessVlan === this.vlanId));
     const r = this.connectedRemoteInterface;
     return !!(this.connectedCable && r && r.isUp && !r.device.isPoweredOff && this.connectedCable.isCompatible);
   }
@@ -379,9 +379,16 @@ export class CloudDevice extends BaseDevice {
   }
 }
 
+/** Devices that forward IP packets: routers and multilayer switches with `ip routing`. */
+export function isRouting(dev) {
+  return dev.type === 'router' || (dev.isMultilayer === true && dev.ipRouting === true);
+}
+
 const SWITCH_PORTS = {
   '2960': () => [...range(1, 24).map(i => [`FastEthernet0/${i}`, 'FastEthernet']), ['GigabitEthernet0/1', 'GigabitEthernet'], ['GigabitEthernet0/2', 'GigabitEthernet']],
   '2950-24': () => range(1, 24).map(i => [`FastEthernet0/${i}`, 'FastEthernet']),
+  '3650-24PS': () => [...range(1, 24).map(i => [`GigabitEthernet1/0/${i}`, 'GigabitEthernet']), ...range(1, 4).map(i => [`GigabitEthernet1/1/${i}`, 'GigabitEthernet'])],
+  'IE-2000': () => [...range(1, 8).map(i => [`FastEthernet1/${i}`, 'FastEthernet']), ['GigabitEthernet1/1', 'GigabitEthernet'], ['GigabitEthernet1/2', 'GigabitEthernet']],
   '2950T': () => [...range(1, 24).map(i => [`FastEthernet0/${i}`, 'FastEthernet']), ['GigabitEthernet0/1', 'GigabitEthernet'], ['GigabitEthernet0/2', 'GigabitEthernet']],
   '3560-24PS': () => [...range(1, 24).map(i => [`FastEthernet0/${i}`, 'FastEthernet']), ['GigabitEthernet0/1', 'GigabitEthernet'], ['GigabitEthernet0/2', 'GigabitEthernet']],
   'Switch-PT': () => range(0, 5).map(i => [`FastEthernet${i}/1`, 'FastEthernet']),
@@ -402,6 +409,20 @@ export class SwitchDevice extends BaseDevice {
     super(id, name, 'switch', model, x, y);
     this.hostname = 'Switch';
     this.isHub = /^(Hub|Repeater|AP|LAP)/.test(model);
+    this.isMultilayer = /^(3560|3650)/.test(model);
+    if (this.isMultilayer) {
+      this.ipRouting = false;
+      this.routingTable = [];
+      this.ripNetworks = [];
+      this.ripVersion = 1;
+      this.ripAutoSummary = true;
+      this.ripEnabled = false;
+      this.ripDefaultOriginate = false;
+      this.ospf = null;
+      this.dhcpPools = [];
+      this.dhcpExcluded = [];
+      this.acls = {};
+    }
     this.macTable = new Map(); // `${vlan}|${mac}` -> { vlan, mac, port, learnedAt }
     this.vlans = [{ id: 1, name: 'default', status: 'active' }];
     this.defaultGateway = '';
@@ -458,6 +479,7 @@ const ROUTER_PORTS = {
   '2911': [['GigabitEthernet0/0', 'GigabitEthernet'], ['GigabitEthernet0/1', 'GigabitEthernet'], ['GigabitEthernet0/2', 'GigabitEthernet'], ['Serial0/0/0', 'Serial'], ['Serial0/0/1', 'Serial']],
   '4321': [['GigabitEthernet0/0/0', 'GigabitEthernet'], ['GigabitEthernet0/0/1', 'GigabitEthernet'], ['Serial0/1/0', 'Serial'], ['Serial0/1/1', 'Serial']],
   '4331': [['GigabitEthernet0/0/0', 'GigabitEthernet'], ['GigabitEthernet0/0/1', 'GigabitEthernet'], ['GigabitEthernet0/0/2', 'GigabitEthernet'], ['Serial0/1/0', 'Serial'], ['Serial0/1/1', 'Serial']],
+  '1841': [['FastEthernet0/0', 'FastEthernet'], ['FastEthernet0/1', 'FastEthernet'], ['Serial0/0/0', 'Serial'], ['Serial0/0/1', 'Serial']],
   '2811': [['FastEthernet0/0', 'FastEthernet'], ['FastEthernet0/1', 'FastEthernet'], ['Serial0/0/0', 'Serial'], ['Serial0/0/1', 'Serial']],
   '2620XM': [['FastEthernet0/0', 'FastEthernet'], ['Serial0/0', 'Serial']],
   '2621XM': [['FastEthernet0/0', 'FastEthernet'], ['FastEthernet0/1', 'FastEthernet'], ['Serial0/0', 'Serial'], ['Serial0/1', 'Serial']],
@@ -569,6 +591,10 @@ export class RouterDevice extends BaseDevice {
     return this.routingTable.find(r => r.destination === '0.0.0.0' && r.mask === '0.0.0.0');
   }
 }
+
+// Multilayer switches reuse the router RIB and lookup logic
+for (const k of ['addRoute', 'getRoutes', 'lookupRoute']) SwitchDevice.prototype[k] = RouterDevice.prototype[k];
+Object.defineProperty(SwitchDevice.prototype, 'defaultRoute', Object.getOwnPropertyDescriptor(RouterDevice.prototype, 'defaultRoute'));
 
 /* ========================================================================== */
 /* ACL evaluation                                                             */
@@ -733,12 +759,12 @@ export class NetworkTopology {
     const results = [];
     const visited = new Set();
     const dev = egress.device;
-    if (!egress.isPhysicalUp) return results;
+    if (!egress.isPhysicalUp || egress.type === 'Loopback') return results;
 
     const queue = [];
     const sendOut = (port, tag, path) => {
-      if (!port.isPhysicalUp) return;
       const remote = port.connectedRemoteInterface;
+      if (!port.isPhysicalUp || !remote) return;
       const hop = { cable: port.connectedCable, from: port.device, to: remote.device, fromIface: port, toIface: remote, vlan: tag };
       queue.push({ dev: remote.device, inIf: remote, tag, path: [...path, hop] });
     };
@@ -754,7 +780,9 @@ export class NetworkTopology {
 
     while (queue.length) {
       const { dev: d, inIf, tag, path } = queue.shift();
-      if (d.type === 'switch' && !d.isHub) {
+      if (d.type === 'switch' && !d.isHub && inIf.routed) {
+        if (tag == null) results.push({ iface: inIf, path });
+      } else if (d.type === 'switch' && !d.isHub) {
         let vlan;
         if (inIf.mode === 'trunk') {
           vlan = tag == null ? inIf.nativeVlan : tag;
@@ -798,7 +826,7 @@ export class NetworkTopology {
     const svi = sw.interfaces.find(i => i.vlanId === vlan && i.isUp);
     if (svi && svi !== originSvi && svi.ip) results.push({ iface: svi, path });
     for (const p of sw.interfaces) {
-      if (p === inIf || !p.isDataPort) continue;
+      if (p === inIf || !p.isDataPort || p.routed) continue;
       if (p.mode === 'trunk') {
         if (p.isVlanAllowed(vlan)) sendOut(p, vlan === p.nativeVlan ? null : vlan, path);
       } else if (p.accessVlan === vlan) {
@@ -854,7 +882,7 @@ export class NetworkTopology {
 
   /** Source interface + next hop selection for a locally originated packet. */
   _egressFor(dev, dstIP) {
-    if (dev.type === 'router') {
+    if (isRouting(dev)) {
       const r = dev.lookupRoute(dstIP, this);
       return r ? { iface: r.iface, nextHop: r.nextHop } : null;
     }
@@ -904,7 +932,7 @@ export class NetworkTopology {
         egress = { iface: r.iface, nextHop: r.nextHop };
       }
 
-      if (cur.type === 'router' && egress.iface.aclOut != null) {
+      if (isRouting(cur) && egress.iface.aclOut != null) {
         if (!aclPermits(cur.acls[egress.iface.aclOut], { src: srcIP, dst: dstIP, proto })) {
           return { status: 'unreachable', at: cur, replyFrom: (inIface || egress.iface).ip, routerArpMiss, routers, acl: true };
         }
@@ -912,7 +940,7 @@ export class NetworkTopology {
 
       const arp = this._arpResolve(egress.iface, egress.nextHop, anim);
       if (!arp) return { status: 'timeout', at: cur, routerArpMiss, routers, reason: 'arp' };
-      if (arp.miss && cur.type === 'router') routerArpMiss = true;
+      if (arp.miss && isRouting(cur)) routerArpMiss = true;
 
       if (anim) {
         anim.push({ type: kind, hops: arp.path, info: { srcIP, dstIP, ttl, srcMac: egress.iface.mac, dstMac: arp.iface.mac, proto } });
@@ -920,7 +948,7 @@ export class NetworkTopology {
 
       const next = arp.iface.device;
       const nextIn = arp.iface;
-      if (next.type === 'router') {
+      if (isRouting(next)) {
         if (nextIn.aclIn != null && !aclPermits(next.acls[nextIn.aclIn], { src: srcIP, dst: dstIP, proto })) {
           return { status: 'unreachable', at: next, replyFrom: nextIn.ip, routerArpMiss, routers, acl: true };
         }
@@ -939,13 +967,13 @@ export class NetworkTopology {
   }
 
   /** Sends one ICMP echo and its reply. */
-  echo(srcDev, dstIP, { ttl = srcDev.type === 'router' ? 255 : 128, anim = [] } = {}) {
+  echo(srcDev, dstIP, { ttl = (srcDev.type === 'router' || srcDev.type === 'switch') ? 255 : 128, anim = [] } = {}) {
     const srcIP = this.sourceIPFor(srcDev, dstIP);
     if (!srcIP) return { result: 'timeout', anim };
     const fwd = this._routePacket(srcDev, srcIP, dstIP, ttl, 'icmp', anim, 'ICMP');
     if (fwd.status === 'delivered') {
       const replier = fwd.at;
-      const replyTTL = replier.type === 'router' ? 255 : 128;
+      const replyTTL = (replier.type === 'router' || replier.type === 'switch') ? 255 : 128;
       const back = this._routePacket(replier, dstIP, srcIP, replyTTL, 'icmp', anim, 'ICMP Reply');
       if (back.status !== 'delivered') return { result: 'timeout', anim };
       if (fwd.routerArpMiss || back.routerArpMiss) return { result: 'timeout', anim, arpLoss: true };
@@ -995,7 +1023,7 @@ export class NetworkTopology {
       for (const ep of this._l2Explore(i)) {
         const n = ep.iface;
         const nd = n.device;
-        if (nd === r || nd.type !== 'router' || !IPUtils.isSameSubnet(i.ip, n.ip, i.mask)) continue;
+        if (nd === r || !isRouting(nd) || !IPUtils.isSameSubnet(i.ip, n.ip, i.mask)) continue;
         const nIfaces = proto === 'rip' ? this._ripIfaces(nd) : this._ospfIfaces(nd);
         if (!nIfaces.includes(n)) continue;
         if (proto === 'rip' && (nd.ripPassive || []).includes(n.name)) continue;
@@ -1022,7 +1050,7 @@ export class NetworkTopology {
 
   _computeDynamicRoutes() {
     const result = new Map();
-    const routers = [...this.devices.values()].filter(d => d.type === 'router' && !d.isPoweredOff);
+    const routers = [...this.devices.values()].filter(d => isRouting(d) && !d.isPoweredOff);
     for (const proto of ['rip', 'ospf']) {
       const adj = new Map();
       for (const r of routers) adj.set(r.id, this.getNeighbors(r, proto));
@@ -1108,10 +1136,10 @@ export class NetworkTopology {
       const e = ep.iface;
       const d = e.device;
       let lease = null;
-      if (d.type === 'router' && e.ip) {
+      if ((d.type === 'router' || d.isMultilayer) && e.ip) {
         lease = this._allocRouterPool(d, e, mac);
         if (!lease && e.helperAddress) {
-          const res = this._routePacket(d, e.ip, e.helperAddress, 255, 'udp', null);
+          const res = isRouting(d) ? this._routePacket(d, e.ip, e.helperAddress, 255, 'udp', null) : { status: 'none' };
           if (res.status === 'delivered' && res.at.services && res.at.services.dhcp.enabled) {
             lease = this._allocServerPool(res.at, mac, e);
             if (lease) lease.gateway = lease.gateway === '0.0.0.0' ? e.ip : lease.gateway;

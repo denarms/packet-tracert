@@ -48,6 +48,7 @@ const COMPONENT_PALETTES = {
         { type: 'router', model: '2911', name: '2911', fullName: 'Cisco 2911 Integrated Services Router', icon: 'assets/components/Specific2911_40x40.png' },
         { type: 'router', model: '2620XM', name: '2620XM', fullName: 'Cisco 2620XM Modular Router', icon: 'assets/components/Specific2620XM_40x40.png' },
         { type: 'router', model: '2621XM', name: '2621XM', fullName: 'Cisco 2621XM Modular Router', icon: 'assets/components/Specific2621XM_40x40.png' },
+        { type: 'router', model: '1841', name: '1841', fullName: 'Cisco 1841 Integrated Services Router', icon: 'assets/components/Specific1841_40x40.png' },
         { type: 'router', model: '2811', name: '2811', fullName: 'Cisco 2811 Integrated Services Router', icon: 'assets/components/Specific2811_40x40.png' },
         { type: 'router', model: 'Router-PT', name: 'PT-Router', fullName: 'Generic Router-PT', icon: 'assets/components/SpecificArtificialRouter_40x40.png' },
         { type: 'router', model: 'Router-Empty', name: 'PT-Empty', fullName: 'Router-PT-Empty Modular', icon: 'assets/components/SpecificArtificialRouterEmpty_40x40.png' }
@@ -55,6 +56,8 @@ const COMPONENT_PALETTES = {
       'switches': [
         { type: 'switch', model: '2960', name: '2960-24TT', fullName: 'Cisco Catalyst 2960-24TT Switch', icon: 'assets/components/Specific2960_40x40.png' },
         { type: 'switch', model: '3560-24PS', name: '3560-24PS', fullName: 'Cisco Catalyst 3560-24PS Multilayer Switch', icon: 'assets/components/Specific3560_24PS_40x40.png' },
+        { type: 'switch', model: '3650-24PS', name: '3650-24PS', fullName: 'Cisco Catalyst 3650-24PS Multilayer Switch', icon: 'assets/components/Specific3650.png' },
+        { type: 'switch', model: 'IE-2000', name: 'IE-2000', fullName: 'Cisco IE-2000 Industrial Ethernet Switch', icon: 'assets/components/IE2000_ComponentBox.png' },
         { type: 'switch', model: '2950-24', name: '2950-24', fullName: 'Cisco Catalyst 2950-24 Switch', icon: 'assets/components/Specific2950-24_40x40.png' },
         { type: 'switch', model: '2950T', name: '2950T-24', fullName: 'Cisco Catalyst 2950T Switch', icon: 'assets/components/Specific2950T_40x40.png' },
         { type: 'switch', model: 'Switch-PT', name: 'PT-Switch', fullName: 'Generic Switch-PT', icon: 'assets/components/SpecificArtificialSwitch_40x40.png' },
@@ -754,7 +757,9 @@ class AppController {
     el.style.left = `${dev.x}px`;
     el.style.top = `${dev.y}px`;
 
-    const iconSrc = DEVICE_LOGICAL_ASSETS[dev.type] || DEVICE_LOGICAL_ASSETS['pc'];
+    const iconSrc = (dev.isMultilayer && DEVICE_LOGICAL_ASSETS.switch3560)
+      || (String(dev.model).startsWith('IE-') && 'assets/logical/iIE2000@2x.png')
+      || DEVICE_LOGICAL_ASSETS[dev.type] || DEVICE_LOGICAL_ASSETS['pc'];
     const ipText = this.deviceIpLabel(dev);
 
     el.innerHTML = `
@@ -3038,7 +3043,7 @@ class AppController {
         ? 'assets/physical/iRealRouter4331Back.png' 
         : 'assets/physical/iRealRouter2911Back.png';
     } else if (isSwitch) {
-      chassisImg = (dev.model === '3560-24PS') 
+      chassisImg = (dev.isMultilayer) 
         ? 'assets/physical/iRealSwitch3560Front.png' 
         : 'assets/physical/iRealSwitch2960_24TTFront.png';
     } else if (isServer) {

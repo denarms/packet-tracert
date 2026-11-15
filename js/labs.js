@@ -51,6 +51,63 @@ export const SAMPLE_LABS = [
     notes: [{ x: 30, y: 60, w: 280, text: 'VLAN 10 (Fa0/1-10) y VLAN 20 (Fa0/11-20).\nR1 enruta entre VLANs con subinterfaces g0/0.10 y g0/0.20 y entrega IPs por DHCP.\nPrueba: ping de PC0 a PC2.' }]
   },
   {
+    id: 'l3switch',
+    name: 'Switch multicapa 3650 + ISR 4331 (inter-VLAN, DHCP, OSPF)',
+    devices: [
+      { key: 'R', type: 'router', model: '4331', name: 'ISR4331', x: 470, y: 70 },
+      { key: 'C', type: 'switch', model: '3650-24PS', name: 'Core3650', x: 470, y: 200 },
+      { key: 'A1', type: 'switch', model: '2960', name: 'Acceso1', x: 250, y: 300 },
+      { key: 'A2', type: 'switch', model: '2960', name: 'Acceso2', x: 690, y: 300 },
+      { key: 'P1', type: 'pc', name: 'PC-Ventas', x: 170, y: 420, dhcp: true },
+      { key: 'P2', type: 'laptop', name: 'Laptop-Ventas', x: 330, y: 420, dhcp: true },
+      { key: 'P3', type: 'pc', name: 'PC-Soporte', x: 610, y: 420, dhcp: true },
+      { key: 'S1', type: 'server', name: 'Servidor', x: 770, y: 420, ip: '192.168.99.10', mask: '255.255.255.0', gw: '192.168.99.1' }
+    ],
+    cables: [
+      ['R', 'GigabitEthernet0/0/0', 'C', 'GigabitEthernet1/0/24', 'straight'],
+      ['C', 'GigabitEthernet1/0/1', 'A1', 'GigabitEthernet0/1', 'crossover'],
+      ['C', 'GigabitEthernet1/0/2', 'A2', 'GigabitEthernet0/1', 'crossover'],
+      ['A1', 'FastEthernet0/1', 'P1', 'FastEthernet0', 'straight'],
+      ['A1', 'FastEthernet0/2', 'P2', 'FastEthernet0', 'straight'],
+      ['A2', 'FastEthernet0/1', 'P3', 'FastEthernet0', 'straight'],
+      ['A2', 'FastEthernet0/24', 'S1', 'FastEthernet0', 'straight']
+    ],
+    ios: {
+      A1: [
+        'hostname Acceso1', 'vlan 10', 'name VENTAS', 'vlan 20', 'name SOPORTE', 'vlan 99', 'name SERVIDORES', 'exit',
+        'interface range fa0/1 - 12', 'switchport mode access', 'switchport access vlan 10', 'exit',
+        'interface g0/1', 'switchport mode trunk', 'end'
+      ],
+      A2: [
+        'hostname Acceso2', 'vlan 10', 'name VENTAS', 'vlan 20', 'name SOPORTE', 'vlan 99', 'name SERVIDORES', 'exit',
+        'interface range fa0/1 - 12', 'switchport mode access', 'switchport access vlan 20', 'exit',
+        'interface fa0/24', 'switchport mode access', 'switchport access vlan 99', 'exit',
+        'interface g0/1', 'switchport mode trunk', 'end'
+      ],
+      C: [
+        'hostname Core', 'ip routing',
+        'vlan 10', 'name VENTAS', 'vlan 20', 'name SOPORTE', 'vlan 99', 'name SERVIDORES', 'exit',
+        'interface range g1/0/1 - 2', 'switchport mode trunk', 'exit',
+        'interface vlan 10', 'ip address 192.168.10.1 255.255.255.0', 'no shutdown',
+        'interface vlan 20', 'ip address 192.168.20.1 255.255.255.0', 'no shutdown',
+        'interface vlan 99', 'ip address 192.168.99.1 255.255.255.0', 'no shutdown',
+        'interface g1/0/24', 'no switchport', 'ip address 10.0.0.2 255.255.255.252', 'no shutdown', 'exit',
+        'ip dhcp excluded-address 192.168.10.1 192.168.10.9',
+        'ip dhcp excluded-address 192.168.20.1 192.168.20.9',
+        'ip dhcp pool VENTAS', 'network 192.168.10.0 255.255.255.0', 'default-router 192.168.10.1', 'dns-server 192.168.99.10', 'exit',
+        'ip dhcp pool SOPORTE', 'network 192.168.20.0 255.255.255.0', 'default-router 192.168.20.1', 'dns-server 192.168.99.10', 'exit',
+        'router ospf 1', 'router-id 2.2.2.2', 'network 192.168.0.0 0.0.255.255 area 0', 'network 10.0.0.0 0.0.0.3 area 0', 'end'
+      ],
+      R: [
+        'hostname ISR4331',
+        'interface g0/0/0', 'ip address 10.0.0.1 255.255.255.252', 'no shutdown',
+        'interface loopback 0', 'ip address 8.8.8.8 255.255.255.255', 'exit',
+        'router ospf 1', 'router-id 1.1.1.1', 'network 10.0.0.0 0.0.0.3 area 0', 'network 8.8.8.8 0.0.0.0 area 0', 'end'
+      ]
+    },
+    notes: [{ x: 20, y: 60, w: 280, text: 'Core 3650 con "ip routing": enruta entre VLAN 10/20/99 con SVIs y da DHCP. Enlace enrutado (no switchport) a ISR4331 por OSPF; Loopback 8.8.8.8 simula Internet.\nPrueba: ping 8.8.8.8 desde PC-Ventas.' }]
+  },
+  {
     id: 'ospf',
     name: 'OSPF área 0 con 3 routers',
     devices: [

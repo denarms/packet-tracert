@@ -24,6 +24,10 @@ El motor (`js/engine.js`) simula la red salto a salto; nada de la salida está "
 - **Capa 3:** rutas conectadas, estáticas (incl. ruta por defecto y AD), **RIP** y **OSPF** (Dijkstra con coste por ancho de banda, passive-interface, default-information originate), coincidencia de prefijo más largo, TTL, ICMP unreachable / time-exceeded, **router-on-a-stick** (subinterfaces dot1Q), loopbacks y **ACLs** numeradas estándar/extendidas.
 - **DHCP:** pools en el router (`ip dhcp pool`, `excluded-address`), servicio DHCP del Server (pestaña *Services*), Home Router y relay con `ip helper-address`. Si falla, el PC usa APIPA como en PT.
 
+### Equipos
+- **Routers:** ISR 4331, ISR 4321, 1941, 2901, 2911, 1841, 2811, 2620XM, 2621XM, Router-PT (cada uno con sus puertos reales, p. ej. `Gi0/0/0` en los ISR 4000).
+- **Switches:** Catalyst 2960-24TT, **3560-24PS y 3650-24PS multicapa** (`ip routing`, SVIs, `no switchport`, OSPF/RIP/DHCP/ACL; el 3560 exige `switchport trunk encapsulation dot1q` antes de `mode trunk`, como el real), IE-2000, 2950, Switch-PT, hubs y APs.
+
 ### Cisco IOS CLI (`js/ios-cli.js`)
 Parser basado en gramática: abreviaturas (`sh ip int br`), ayuda `?`, Tab, `% Invalid input detected at '^' marker.`, `% Ambiguous command`, `% Incomplete command.`, `Translating "..."...domain server`, `do`, `interface range`, retorno automático a modo global, mensajes `%LINK-5-CHANGED` / `%OSPF-5-ADJCHG` / `%SYS-5-CONFIG_I`.
 Incluye `enable secret`, `line console/vty` con `password`/`login [local]`, `username`, `banner motd`, `service password-encryption`, `copy run start` / `write`, `erase startup-config`, `reload` (vuelve a la startup-config; las VLAN persisten en vlan.dat) y `show running-config | startup-config | ip route | ip protocols | ip ospf neighbor | ip dhcp binding | access-lists | vlan brief | interfaces [trunk] | mac address-table | arp | cdp neighbors | version`. Ver *Help → Supported IOS / PC Commands*.
