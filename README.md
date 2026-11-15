@@ -17,36 +17,26 @@ Una réplica web de alta fidelidad de **Cisco Packet Tracer 8.2.2**, utilizando 
 
 ## ⚡ Capacidades de Simulación
 
-1. **Topología Interactiva:**
-   - Arrastre fluido de nodos con recálculo en tiempo real de cables y luces de enlace.
-   - **Indicadores de Enlace Triangulares Reales:** Luces de enlace verdes triangulares que apuntan hacia el exterior en ambos extremos del cable cuando el puerto y la interfaz remota están activas y encendidas; rojas cuando están apagadas/shutdown.
-   - Conexión interactiva con selector de puertos libres (`GigabitEthernet0/0`, `FastEthernet0/1`, `Serial0/0/0`, etc.).
+El motor (`js/engine.js`) simula la red salto a salto; nada de la salida está "precocinada":
 
-2. **Cisco IOS CLI Auténtico:**
-   - Banner oficial de Cisco IOS C2900 Software Release 15.1(4)M4.
-   - Prompts de Cisco IOS: `Router>`, `Router#` (Privileged EXEC), `Router(config)#` (Global Config), `Router(config-if)#` (Interface Config).
-   - Comandos compatibles:
-     - `enable` / `disable`
-     - `configure terminal` / `conf t`
-     - `hostname <name>`
-     - `interface <id>` (`int g0/0`, `interface FastEthernet0/1`, etc.)
-     - `ip address <ip> <máscara>`
-     - `no shutdown` / `shutdown`
-     - `show ip interface brief`
-     - `show ip route`
-     - `show mac-address-table`
-     - `show running-config`
-     - `write memory` / `copy run start`
-     - `ping <ip>`
-     - Historial de comandos con flechas Arriba/Abajo y tecla Enter.
+- **Capa 1:** compatibilidad de cables como en PT (directo vs. cruzado, serie DCE/DTE, consola), estado administrativo y encendido. Un cable incorrecto deja el enlace en rojo.
+- **Capa 2:** ARP real (el primer ping entre subredes pierde un paquete, como en PT), aprendizaje de MAC en switches, **VLANs** (access / trunk 802.1Q, native y allowed VLANs), SVIs y hubs.
+- **Capa 3:** rutas conectadas, estáticas (incl. ruta por defecto y AD), **RIP** y **OSPF** (Dijkstra con coste por ancho de banda, passive-interface, default-information originate), coincidencia de prefijo más largo, TTL, ICMP unreachable / time-exceeded, **router-on-a-stick** (subinterfaces dot1Q), loopbacks y **ACLs** numeradas estándar/extendidas.
+- **DHCP:** pools en el router (`ip dhcp pool`, `excluded-address`), servicio DHCP del Server (pestaña *Services*), Home Router y relay con `ip helper-address`. Si falla, el PC usa APIPA como en PT.
 
-3. **Escritorio de Clientes (PC / Laptop):**
-   - **IP Configuration:** Modificación de IPv4, Máscara de subred, Default Gateway y DNS Server.
-   - **Command Prompt:** Terminal de comandos con `ipconfig`, `ping <ip>` (con animación de paquetes por los cables y reporte de bytes, tiempo, TTL y pérdida de paquetes), `cls` y `help`.
+### Cisco IOS CLI (`js/ios-cli.js`)
+Parser basado en gramática: abreviaturas (`sh ip int br`), ayuda `?`, Tab, `% Invalid input detected at '^' marker.`, `% Ambiguous command`, `% Incomplete command.`, `Translating "..."...domain server`, `do`, `interface range`, retorno automático a modo global, mensajes `%LINK-5-CHANGED` / `%OSPF-5-ADJCHG` / `%SYS-5-CONFIG_I`.
+Incluye `enable secret`, `line console/vty` con `password`/`login [local]`, `username`, `banner motd`, `service password-encryption`, `copy run start` / `write`, `erase startup-config`, `reload` (vuelve a la startup-config; las VLAN persisten en vlan.dat) y `show running-config | startup-config | ip route | ip protocols | ip ospf neighbor | ip dhcp binding | access-lists | vlan brief | interfaces [trunk] | mac address-table | arp | cdp neighbors | version`. Ver *Help → Supported IOS / PC Commands*.
 
-4. **Herramienta Simple PDU (Sobre de Ping rápido):**
-   - Activa el cursor de sobre PDU. Haz clic en el dispositivo de origen y luego en el de destino.
-   - Añade el paquete a la tabla inferior de PDUs con animación del sobre en vuelo sobre los cables y actualiza el estado a `Successful` o `Failed`.
+### PC
+- **Command Prompt:** `ipconfig [/all|/release|/renew]`, `ping [-n N] [-t]`, `tracert`, `arp -a|-d`, `telnet` (sesión VTY real contra el router/switch).
+- **Terminal:** consola RS-232 → puerto Console del router/switch con cable de consola.
+- **IP Configuration:** estática o DHCP real.
+
+### Interfaz
+- Menús *File/Edit/Options/View/Tools/Help*, **Guardar/Abrir** topologías (`.ptw`, Ctrl+S / Ctrl+O), autoguardado local y laboratorios de ejemplo (VLAN + Router-on-a-Stick + DHCP, OSPF con 3 routers).
+- **Modo Simulación** con *Event List*, Play / Capture-Forward, filtros ARP/ICMP/DHCP y ventana *PDU Information* por capas OSI.
+- Herramienta **Inspect** (ARP, MAC, Routing, ACL, Port Status), tooltip de puertos al pasar el ratón, etiquetas de puertos, cable *Automatic* que elige puertos y tipo.
 
 ---
 

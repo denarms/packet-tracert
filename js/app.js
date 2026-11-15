@@ -3,8 +3,10 @@
  * Optimized Fluid Drag & Drop (Zero extra clicks)
  */
 
-import { NetworkTopology } from './engine.js';
+import { NetworkTopology, IPUtils, shortIfaceName } from './engine.js';
 import { CiscoIOSCLI } from './ios-cli.js';
+import { PCShell } from './pc-shell.js';
+import { SAMPLE_LABS, buildLab } from './labs.js';
 
 const DEVICE_LOGICAL_ASSETS = {
   'router': 'assets/logical/iRouter@2x.png',
@@ -148,6 +150,9 @@ class AppController {
     this.connectingIfaceA = null;
     this.pduSource = null;
     this.clis = new Map();
+    this.shells = new Map();
+    this.showPortLabels = false;
+    this.fileName = null;
     this.simSeconds = 0;
     this.shapes = [];
     this.notes = [];
@@ -158,8 +163,13 @@ class AppController {
     this.initDOM();
     this.initTimer();
     this.initEvents();
+    this.initMenus();
+    this.initKeyboard();
+    this.initSimPanel();
+    this.initHoverTooltip();
     this.renderCategoryTiers();
-    this.topology.loadAuthenticLab();
+    if (!this.restoreAutosave()) this.topology.loadAuthenticLab();
+    this.topology.on((name) => { if (name === 'topology-changed' || name === 'pdu-list-changed') this.scheduleAutosave(); });
   }
 
   initDOM() {
@@ -186,6 +196,10 @@ class AppController {
 
   initTimer() {
     setInterval(() => {
+      if (this.topology.isSimulationMode) {
+        this.dockTimerText.innerText = `${this.topology.simClock.toFixed(3)} s`;
+        return;
+      }
       this.simSeconds++;
       const hrs = String(Math.floor(this.simSeconds / 3600)).padStart(2, '0');
       const mins = String(Math.floor((this.simSeconds % 3600) / 60)).padStart(2, '0');
@@ -230,19 +244,17 @@ class AppController {
     // 3. Preset Lab loader
     document.getElementById('tb-load-lab').addEventListener('click', () => {
       this.topology.loadAuthenticLab();
+      this.clis.clear();
+      this.shells.clear();
       this.renderCanvas();
     });
+    document.getElementById('tb-open').addEventListener('click', () => this.openFile());
+    document.getElementById('tb-save').addEventListener('click', () => this.saveFile());
+    document.getElementById('tb-print').addEventListener('click', () => window.print());
 
     // 4. Clear / New Lab
     document.getElementById('tb-new').addEventListener('click', () => {
-      if (confirm('¿Desea crear un nuevo archivo y vaciar la topología?')) {
-        this.topology.devices.clear();
-        this.topology.cables = [];
-        this.topology.pduList = [];
-        this.shapes = [];
-        this.notes = [];
-        this.topology.emit('topology-changed');
-      }
+      this.newFile();
     });
 
     // 5. Secondary Action Toolbar Buttons
@@ -278,24 +290,18 @@ class AppController {
     });
 
     // 7. Realtime / Simulation Tabs
-    document.getElementById('tab-realtime').addEventListener('click', () => {
-      document.getElementById('tab-realtime').classList.add('active');
-      document.getElementById('tab-simulation').classList.remove('active');
-      this.topology.isSimulationMode = false;
-    });
-
-    document.getElementById('tab-simulation').addEventListener('click', () => {
-      document.getElementById('tab-simulation').classList.add('active');
-      document.getElementById('tab-realtime').classList.remove('active');
-      this.topology.isSimulationMode = true;
-    });
+    document.getElementById('tab-realtime').addEventListener('click', () => this.setSimulationMode(false));
+    document.getElementById('tab-simulation').addEventListener('click', () => this.setSimulationMode(true));
 
     // 8. Reset and Fast-forward
     document.getElementById('btn-sim-reset').addEventListener('click', () => {
       this.simSeconds = 0;
       this.dockTimerText.innerText = '00:00:00';
-      this.topology.activeSimEvents = [];
-      this.topology.emit('animation-frame');
+      this.topology.resetSimulation();
+      for (const d of this.topology.devices.values()) {
+        d.arpTable.clear();
+        if (d.macTable) d.macTable.clear();
+      }
     });
 
     let ffwActive = false;
@@ -633,7 +639,7 @@ class AppController {
     for (const cable of this.topology.cables) {
       const devA = cable.ifaceA.device;
       const devB = cable.ifaceB.device;
-      const cableClass = cable.type === 'crossover' ? 'crossover' : (cable.type === 'serial' ? 'serial' : 'straight');
+      const cableClass = ['crossover', 'serial', 'console', 'fiber', 'phone', 'coaxial'].includes(cable.type) ? cable.type : 'straight';
 
       svgHtml += `<line class="pt-cable-svg ${cableClass}" x1="${devA.x}" y1="${devA.y}" x2="${devB.x}" y2="${devB.y}" data-cable-id="${cable.id}"/>`;
 
@@ -651,8 +657,16 @@ class AppController {
       const stateB = cable.ifaceB.isPhysicalUp ? 'up' : 'down';
 
       const angle = Math.atan2(dy, dx);
-      svgHtml += this.createTriangleLED(ax, ay, angle, stateA);
-      svgHtml += this.createTriangleLED(bx, by, angle + Math.PI, stateB);
+      if (cable.type !== 'console') {
+        svgHtml += this.createTriangleLED(ax, ay, angle, stateA);
+        svgHtml += this.createTriangleLED(bx, by, angle + Math.PI, stateB);
+      }
+      if (this.showPortLabels) {
+        const lx = devA.x + (dx / dist) * 58, ly = devA.y + (dy / dist) * 58;
+        const mx = devB.x - (dx / dist) * 58, my = devB.y - (dy / dist) * 58;
+        svgHtml += `<text class="port-label" x="${lx}" y="${ly}">${escapeHtml(shortIfaceName(cable.ifaceA.name))}</text>`;
+        svgHtml += `<text class="port-label" x="${mx}" y="${my}">${escapeHtml(shortIfaceName(cable.ifaceB.name))}</text>`;
+      }
     }
     this.svgCablesLayer.innerHTML = svgHtml;
   }
@@ -696,9 +710,10 @@ class AppController {
         el.style.left = `${dev.x}px`;
         el.style.top = `${dev.y}px`;
         el.querySelector('.device-name-badge').innerText = dev.name;
+        el.classList.toggle('powered-off', !!dev.isPoweredOff);
         const ipBadge = el.querySelector('.device-ip-badge');
         if (ipBadge) {
-          ipBadge.innerText = dev.ip || (dev.type === 'router' ? 'Multi-IF' : '');
+          ipBadge.innerText = this.deviceIpLabel(dev);
         }
       } else {
         el.remove();
@@ -740,7 +755,7 @@ class AppController {
     el.style.top = `${dev.y}px`;
 
     const iconSrc = DEVICE_LOGICAL_ASSETS[dev.type] || DEVICE_LOGICAL_ASSETS['pc'];
-    const ipText = dev.ip || (dev.type === 'router' ? 'Multi-IF' : '');
+    const ipText = this.deviceIpLabel(dev);
 
     el.innerHTML = `
       <div class="device-icon-wrapper">
@@ -828,7 +843,7 @@ class AppController {
 
       // Single click selects device or inspects
       if (this.currentTool === 'inspect') {
-        this.openDeviceModal(dev);
+        this.showInspectMenu(dev, e.clientX, e.clientY);
       }
     });
 
@@ -841,11 +856,64 @@ class AppController {
     return el;
   }
 
+  cableTypeForTool(tool) {
+    return {
+      cable_auto: 'auto', cable_console: 'console', cable_straight: 'straight', cable_crossover: 'crossover',
+      cable_fiber: 'fiber', cable_phone: 'phone', cable_coaxial: 'coaxial', cable_serial_dce: 'serial', cable_serial_dte: 'serial'
+    }[tool] || 'straight';
+  }
+
+  portFitsCable(iface, cableType) {
+    if (!iface.isCableable) return false;
+    if (cableType === 'console') return iface.type === 'Console' || iface.type === 'RS232';
+    if (cableType === 'serial') return iface.type === 'Serial';
+    if (cableType === 'phone') return iface.type === 'Phone';
+    if (cableType === 'coaxial') return iface.type === 'Coaxial';
+    if (cableType === 'auto') return iface.isDataPort;
+    return iface.isDataPort && iface.type !== 'Serial' && iface.type !== 'Phone' && iface.type !== 'Coaxial';
+  }
+
+  pickAutoPorts(devA, devB) {
+    const free = (d) => d.interfaces.filter(i => i.isDataPort && !i.connectedCable && i.type !== 'Phone' && i.type !== 'Coaxial');
+    const a = free(devA), b = free(devB);
+    const eth = (i) => i.type !== 'Serial';
+    const rank = (i) => (i.type === 'GigabitEthernet' ? 0 : i.type === 'FastEthernet' ? 1 : 2);
+    const host = (d) => d.type !== 'router' && d.type !== 'switch';
+    // Hosts land on access (FastEthernet) ports; network devices prefer Gigabit uplinks
+    const sortFor = (list, other) => list.filter(eth).sort((x, y) => (host(other) ? rank(y) - rank(x) : rank(x) - rank(y)));
+    const ea = sortFor(a, devB), eb = sortFor(b, devA);
+    if (ea.length && eb.length) return [ea[0], eb[0]];
+    const sa = a.filter(i => i.type === 'Serial'), sb = b.filter(i => i.type === 'Serial');
+    if (sa.length && sb.length) return [sa[0], sb[0]];
+    return null;
+  }
+
   handleCableClick(dev, mouseEvent) {
-    const cableType = this.currentTool === 'cable_crossover' ? 'crossover' : (this.currentTool === 'cable_serial_dce' || this.currentTool === 'cable_serial_dte' ? 'serial' : 'straight');
+    const tool = this.currentTool;
+    const cableType = this.cableTypeForTool(tool);
+    const finish = () => {
+      this.connectingDevA = null;
+      this.connectingIfaceA = null;
+      this.clearTempCable();
+      this.setTool('select', 'tool-select');
+      document.querySelectorAll('.dev-tray-btn').forEach(b => b.classList.remove('active'));
+    };
+
+    if (tool === 'cable_auto') {
+      if (!this.connectingDevA) {
+        this.connectingDevA = dev;
+        return;
+      }
+      if (dev.id === this.connectingDevA.id) return;
+      const pair = this.pickAutoPorts(this.connectingDevA, dev);
+      if (!pair) this.flashStatus('No hay puertos libres compatibles entre los dos dispositivos.');
+      else this.topology.connect(this.connectingDevA.id, pair[0].name, dev.id, pair[1].name, 'auto');
+      finish();
+      return;
+    }
 
     if (!this.connectingDevA) {
-      this.showPortPicker(dev, mouseEvent.clientX, mouseEvent.clientY, (iface) => {
+      this.showPortPicker(dev, mouseEvent.clientX, mouseEvent.clientY, cableType, (iface) => {
         this.connectingDevA = dev;
         this.connectingIfaceA = iface;
       });
@@ -856,25 +924,27 @@ class AppController {
         this.portPicker.style.display = 'none';
         return;
       }
-
-      this.showPortPicker(dev, mouseEvent.clientX, mouseEvent.clientY, (ifaceB) => {
-        this.topology.connect(devA.id, ifaceA.name, dev.id, ifaceB.name, cableType);
-        this.connectingDevA = null;
-        this.connectingIfaceA = null;
+      this.showPortPicker(dev, mouseEvent.clientX, mouseEvent.clientY, cableType, (ifaceB) => {
+        // Serial cables store the DCE end first
+        if (tool === 'cable_serial_dte') this.topology.connect(dev.id, ifaceB.name, devA.id, ifaceA.name, cableType);
+        else this.topology.connect(devA.id, ifaceA.name, dev.id, ifaceB.name, cableType);
+        finish();
       });
     }
   }
 
-  showPortPicker(dev, clientX, clientY, onSelect) {
+  showPortPicker(dev, clientX, clientY, cableType, onSelect) {
     this.portPickerList.innerHTML = '';
     const rect = this.viewport.getBoundingClientRect();
-
-    dev.interfaces.forEach(iface => {
+    const ports = dev.interfaces.filter(i => this.portFitsCable(i, cableType));
+    if (!ports.length) {
+      this.portPickerList.innerHTML = '<div class="port-item disabled"><span>Sin puertos compatibles</span></div>';
+    }
+    ports.forEach(iface => {
       const opt = document.createElement('div');
       const inUse = iface.connectedCable !== null;
       opt.className = 'port-item' + (inUse ? ' disabled' : '');
-      opt.innerHTML = `<span>${iface.name}</span> <span style="font-size: 9px; opacity: 0.7;">${inUse ? '(En uso)' : 'Libre'}</span>`;
-
+      opt.innerHTML = `<span>${escapeHtml(iface.name)}</span>`;
       if (!inUse) {
         opt.addEventListener('click', (e) => {
           e.stopPropagation();
@@ -884,7 +954,6 @@ class AppController {
       }
       this.portPickerList.appendChild(opt);
     });
-
     this.portPicker.style.left = `${clientX - rect.left + 8}px`;
     this.portPicker.style.top = `${clientY - rect.top + 8}px`;
     this.portPicker.style.display = 'block';
@@ -924,13 +993,7 @@ class AppController {
         <td style="cursor: pointer; color: #dc2626;" class="btn-del-pdu">delete</td>
       `;
 
-      tr.querySelector('.btn-fire-pdu').addEventListener('click', () => {
-        const srcDev = Array.from(this.topology.devices.values()).find(d => d.name === pdu.source);
-        const dstDev = Array.from(this.topology.devices.values()).find(d => d.name === pdu.dest);
-        if (srcDev && dstDev) {
-          this.topology.sendSimplePDU(srcDev.id, dstDev.id);
-        }
-      });
+      tr.querySelector('.btn-fire-pdu').addEventListener('click', () => this.topology.firePDU(pdu));
 
       tr.querySelector('.btn-del-pdu').addEventListener('click', () => {
         const pIdx = this.topology.pduList.indexOf(pdu);
@@ -1147,6 +1210,7 @@ class AppController {
       el.dataset.noteId = note.id;
       el.style.left = `${note.x}px`;
       el.style.top = `${note.y}px`;
+      if (note.w) el.style.width = `${note.w}px`;
 
       el.innerHTML = `
         <div class="note-header-bar">
@@ -1164,6 +1228,7 @@ class AppController {
       textarea.addEventListener('input', () => {
         note.text = textarea.value;
       });
+      if (note.w) textarea.rows = Math.max(2, Math.ceil((note.text || '').length / 42) + 1);
 
       // Delete button
       delBtn.addEventListener('click', (e) => {
@@ -1255,10 +1320,16 @@ class AppController {
       // Screenshot 2: Physical | Config | Attributes
       tabs = ['Physical', 'Config', 'Attributes'];
       defaultTab = 'Physical';
-    } else if (dev.type === 'pc' || dev.type === 'laptop' || dev.type === 'server' || dev.type === 'printer') {
+    } else if (dev.type === 'server') {
+      tabs = ['Physical', 'Config', 'Services', 'Desktop', 'Programming', 'Attributes'];
+      defaultTab = 'Config';
+    } else if (dev.type === 'pc' || dev.type === 'laptop' || dev.type === 'printer') {
       // Screenshot 3: Physical | Config | Desktop | Programming | Attributes
       tabs = ['Physical', 'Config', 'Desktop', 'Programming', 'Attributes'];
       defaultTab = 'Config';
+    } else if (dev.isHub) {
+      tabs = ['Physical', 'Config', 'Attributes'];
+      defaultTab = 'Physical';
     } else {
       // Cisco Router or Switch: Physical | Config | CLI | Attributes
       tabs = ['Physical', 'Config', 'CLI', 'Attributes'];
@@ -1278,6 +1349,7 @@ class AppController {
         else if (tabName === 'Physical') this.renderPhysicalTab(dev);
         else if (tabName === 'GUI') this.renderGUITab(dev);
         else if (tabName === 'Programming') this.renderProgrammingTab(dev);
+        else if (tabName === 'Services') this.renderServicesTab(dev);
         else this.renderAttributesTab(dev);
       });
       this.modalTabs.appendChild(btn);
@@ -1294,115 +1366,151 @@ class AppController {
     this.modal.style.display = 'flex';
   }
 
-  renderCLITab(dev) {
-    if (!this.clis.has(dev.id)) {
-      this.clis.set(dev.id, new CiscoIOSCLI(dev, this.topology));
-    }
-    const cli = this.clis.get(dev.id);
+  getCLI(dev) {
+    if (!this.clis.has(dev.id)) this.clis.set(dev.id, new CiscoIOSCLI(dev, this.topology));
+    return this.clis.get(dev.id);
+  }
 
+  getShell(dev) {
+    if (!this.shells.has(dev.id)) this.shells.set(dev.id, new PCShell(dev, this.topology));
+    return this.shells.get(dev.id);
+  }
+
+  /**
+   * Terminal widget shared by the IOS CLI tab, the PC Command Prompt,
+   * the PC Terminal (console) app and the Telnet client.
+   */
+  mountTerminal(host, session, theme = 'ios') {
+    if (this._activeSession && this._activeSession !== session) this._activeSession.onOutput = null;
+    this._activeSession = session;
+    host.innerHTML = `<div class="term-view term-${theme}"><span class="term-out"></span><div class="term-line"><span class="term-prompt"></span><input class="term-input" spellcheck="false" autocomplete="off"></div></div>`;
+    const view = host.querySelector('.term-view');
+    const out = host.querySelector('.term-out');
+    const promptEl = host.querySelector('.term-prompt');
+    const input = host.querySelector('.term-input');
+    const render = () => {
+      if (!view.isConnected) {
+        if (session.onOutput === render) session.onOutput = null;
+        return;
+      }
+      out.textContent = session.transcript;
+      promptEl.textContent = session.getPrompt();
+      input.type = session.isPasswordInput ? 'password' : 'text';
+      view.scrollTop = view.scrollHeight;
+    };
+    session.onOutput = render;
+    render();
+    view.addEventListener('mouseup', () => { if (!String(window.getSelection())) input.focus(); });
+    setTimeout(() => input.focus(), 0);
+
+    const runLines = async (lines) => {
+      for (const line of lines) {
+        await session.handleLine(line);
+        render();
+      }
+    };
+
+    input.addEventListener('beforeinput', (e) => {
+      if (e.data === '?' && session.help && session.state === 'ready') {
+        e.preventDefault();
+        session.help(input.value);
+        render();
+      }
+    });
+
+    input.addEventListener('paste', (e) => {
+      const text = (e.clipboardData || window.clipboardData).getData('text');
+      if (!/[\r\n]/.test(text)) return;
+      e.preventDefault();
+      const lines = (input.value + text).split(/\r?\n/);
+      input.value = lines.pop();
+      runLines(lines);
+    });
+
+    input.addEventListener('keydown', async (e) => {
+      const hist = session.remote || session;
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const v = input.value;
+        input.value = '';
+        await runLines([v]);
+        input.focus();
+        return;
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        if (session.complete) input.value = session.complete(input.value);
+        return;
+      }
+      if (e.key === '?' && session.help && session.state === 'ready') {
+        e.preventDefault();
+        session.help(input.value);
+        render();
+        return;
+      }
+      if (e.key === 'ArrowUp' || (e.ctrlKey && e.key.toLowerCase() === 'p')) {
+        e.preventDefault();
+        if (hist.history && hist.history.length && hist.historyIndex > 0) {
+          hist.historyIndex--;
+          input.value = hist.history[hist.historyIndex] || '';
+        }
+        return;
+      }
+      if (e.key === 'ArrowDown' || (e.ctrlKey && e.key.toLowerCase() === 'n')) {
+        e.preventDefault();
+        if (hist.history && hist.historyIndex < hist.history.length - 1) {
+          hist.historyIndex++;
+          input.value = hist.history[hist.historyIndex] || '';
+        } else if (hist.history) {
+          hist.historyIndex = hist.history.length;
+          input.value = '';
+        }
+        return;
+      }
+      if (e.ctrlKey && e.key.toLowerCase() === 'c' && !String(window.getSelection())) {
+        e.preventDefault();
+        session.ctrlC(input.value);
+        input.value = '';
+        render();
+        return;
+      }
+      if (e.ctrlKey && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (session.ctrlZ) session.ctrlZ();
+        input.value = '';
+        render();
+      }
+    });
+    return { render, runLines, input };
+  }
+
+  renderCLITab(dev) {
+    const cli = this.getCLI(dev);
     this.modalContent.innerHTML = `
-      <div class="cli-viewport" id="cli-viewport-container" style="flex:1; display:flex; flex-direction:column; background:#000000; padding:10px; border-radius:3px; overflow:hidden;">
-        <div class="cli-scroll" id="cli-scroll" style="flex:1; overflow-y:auto; color:#22c55e; font-family:'Consolas','Courier New',monospace; font-size:12px; white-space:pre-wrap; line-height:1.4;">${cli.getBanner()}</div>
-        <div class="cli-input-box" style="display:flex; align-items:center; gap:4px; margin-top:6px; background:#000000;">
-          <span class="cli-prompt-text" id="cli-prompt" style="color:#22c55e; font-family:'Consolas','Courier New',monospace; font-size:12px; font-weight:700;">${cli.getPrompt()}</span>
-          <input type="text" class="cli-cmd-input" id="cli-cmd-input" autofocus autocomplete="off" spellcheck="false" style="flex:1; background:transparent; border:none; outline:none; color:#ffffff; font-family:'Consolas','Courier New',monospace; font-size:12px;">
+      <div class="cli-tab-wrap">
+        <div class="cli-tab-title">IOS Command Line Interface</div>
+        <div class="cli-term-host" id="cli-term-host"></div>
+        <div class="cli-tab-buttons">
+          <button class="cfg-action-button" id="cli-btn-copy">Copy</button>
+          <button class="cfg-action-button" id="cli-btn-paste">Paste</button>
         </div>
       </div>
     `;
-
-    const container = document.getElementById('cli-viewport-container');
-    const scroll = document.getElementById('cli-scroll');
-    const prompt = document.getElementById('cli-prompt');
-    const input = document.getElementById('cli-cmd-input');
-
-    container.addEventListener('click', () => {
-      input.focus();
+    const term = this.mountTerminal(document.getElementById('cli-term-host'), cli, 'ios');
+    document.getElementById('cli-btn-copy').addEventListener('click', () => {
+      const sel = String(window.getSelection()) || cli.transcript;
+      if (navigator.clipboard) navigator.clipboard.writeText(sel).catch(() => {});
     });
-
-    input.focus();
-
-    input.addEventListener('keydown', (e) => {
-      // 1. Exact Tab Completion
-      if (e.key === 'Tab') {
-        e.preventDefault();
-        e.stopPropagation();
-        const res = cli.handleTabCompletion(input.value);
-        if (res.completedText !== input.value) {
-          input.value = res.completedText;
-        } else if (res.candidates && res.candidates.length > 0) {
-          scroll.innerText += `\n${prompt.innerText} ${input.value}\n${res.candidates.join('  ')}\n`;
-          prompt.innerText = cli.getPrompt();
-          scroll.scrollTop = scroll.scrollHeight;
-        }
-        return;
-      }
-
-      // 2. Exact Contextual Help '?'
-      if (e.key === '?') {
-        e.preventDefault();
-        e.stopPropagation();
-        const res = cli.handleContextualHelp(input.value);
-        scroll.innerText += `\n${prompt.innerText} ${input.value}?\n${res.helpText}\n`;
-        prompt.innerText = cli.getPrompt();
-        scroll.scrollTop = scroll.scrollHeight;
-        return;
-      }
-
-      // 3. Command History Navigation
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        if (cli.history.length > 0) {
-          if (cli.historyIndex > 0) {
-            cli.historyIndex--;
-          }
-          input.value = cli.history[cli.historyIndex] || '';
-        }
-        return;
-      }
-
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        if (cli.history.length > 0) {
-          if (cli.historyIndex < cli.history.length - 1) {
-            cli.historyIndex++;
-            input.value = cli.history[cli.historyIndex] || '';
-          } else {
-            cli.historyIndex = cli.history.length;
-            input.value = '';
-          }
-        }
-        return;
-      }
-
-      // 4. Ctrl+C Cancel
-      if (e.ctrlKey && e.key.toLowerCase() === 'c') {
-        e.preventDefault();
-        scroll.innerText += `\n${prompt.innerText} ${input.value}^C\n`;
-        input.value = '';
-        scroll.scrollTop = scroll.scrollHeight;
-        return;
-      }
-
-      // 5. Ctrl+Z Exit to Privileged EXEC
-      if (e.ctrlKey && e.key.toLowerCase() === 'z') {
-        e.preventDefault();
-        scroll.innerText += `\n${prompt.innerText} ${input.value}^Z\n`;
-        cli.mode = 'PRIVILEGED';
-        prompt.innerText = cli.getPrompt();
-        input.value = '';
-        scroll.scrollTop = scroll.scrollHeight;
-        return;
-      }
-
-      // 6. Enter Execution
-      if (e.key === 'Enter') {
-        const val = input.value;
-        input.value = '';
-        scroll.innerText += `\n${prompt.innerText} ${val}\n`;
-        const res = cli.execute(val);
-        if (res) scroll.innerText += `${res}\n`;
-        prompt.innerText = cli.getPrompt();
-        scroll.scrollTop = scroll.scrollHeight;
+    document.getElementById('cli-btn-paste').addEventListener('click', async () => {
+      try {
+        const text = await navigator.clipboard.readText();
+        const lines = text.split(/\r?\n/);
+        const last = lines.pop();
+        await term.runLines(lines);
+        term.input.value += last;
+        term.input.focus();
+      } catch (e) {
+        this.flashStatus('El navegador no permitió leer el portapapeles. Usa Ctrl+V dentro de la consola.');
       }
     });
   }
@@ -1491,6 +1599,7 @@ class AppController {
             <div class="cfg-radio-group">
               <label class="cfg-radio-label"><input type="radio" name="pc-ip-mode" id="pc-ip-dhcp" ${isDhcp ? 'checked' : ''}> DHCP</label>
               <label class="cfg-radio-label"><input type="radio" name="pc-ip-mode" id="pc-ip-static" ${!isDhcp ? 'checked' : ''}> Static</label>
+              <span id="pc-dhcp-status" class="dhcp-status"></span>
             </div>
             <div class="cfg-row-flex">
               <span class="cfg-label-fixed">IP Address</span>
@@ -1535,13 +1644,17 @@ class AppController {
     const maskIn = document.getElementById('pc-mask-in');
     const gwIn = document.getElementById('pc-gw-in');
 
-    radDhcp.addEventListener('change', () => {
-      if (radDhcp.checked) {
-        dev.ipType = 'dhcp';
-        ipIn.value = '192.168.1.' + (Math.floor(Math.random() * 50) + 10);
-        maskIn.value = '255.255.255.0';
-        gwIn.value = '192.168.1.1';
-      }
+    radDhcp.addEventListener('change', async () => {
+      if (!radDhcp.checked) return;
+      dev.ipType = 'dhcp';
+      const status = document.getElementById('pc-dhcp-status');
+      status.textContent = 'Requesting IP Address...';
+      const res = await this.requestDhcpFor(dev);
+      ipIn.value = dev.ip;
+      maskIn.value = dev.mask;
+      gwIn.value = dev.gateway;
+      document.getElementById('pc-dns-in').value = dev.dns;
+      status.textContent = res;
     });
 
     radStatic.addEventListener('change', () => {
@@ -1549,12 +1662,16 @@ class AppController {
     });
 
     document.getElementById('pc-save-btn').addEventListener('click', () => {
-      dev.ip = ipIn.value.trim();
-      dev.mask = maskIn.value.trim();
-      dev.gateway = gwIn.value.trim();
+      const ip = ipIn.value.trim(), mask = maskIn.value.trim(), gw = gwIn.value.trim();
+      if (ip && !IPUtils.isValidIP(ip)) return this.flashStatus('Invalid IP address.');
+      if (mask && !IPUtils.isValidMask(mask)) return this.flashStatus('Invalid subnet mask.');
+      if (gw && !IPUtils.isValidIP(gw)) return this.flashStatus('Invalid default gateway.');
+      dev.ip = ip;
+      dev.mask = mask;
+      dev.gateway = gw;
       dev.dns = document.getElementById('pc-dns-in').value.trim();
+      dev.arpTable.clear();
       this.topology.emit('topology-changed');
-      alert('IP Configuration saved successfully.');
       this.renderDesktopTab(dev);
     });
   }
@@ -1567,77 +1684,13 @@ class AppController {
             <img src="assets/desktop/cmdprompt.png" width="16" height="16">
             <span>Command Prompt</span>
           </div>
-          <button class="desktop-btn-back" id="btn-back-desktop">◄ Back to Desktop</button>
+          <button class="desktop-btn-back" id="btn-back-desktop">X</button>
         </div>
-        <div class="cli-viewport" style="flex:1; display:flex; flex-direction:column; background:#000000; padding:8px;">
-          <div class="cli-scroll" id="pc-cmd-scroll" style="flex:1; overflow-y:auto; color:#ffffff; font-family:'Consolas','Courier New',monospace; font-size:12px; white-space:pre-wrap; line-height:1.4;">Packet Tracer PC Command Line 1.0\nC:\\></div>
-          <div class="cli-input-box" style="display:flex; align-items:center; gap:4px; margin-top:4px;">
-            <span class="cli-prompt-text" style="color: #cbd5e1; font-family:'Consolas',monospace; font-size:12px;">C:\\></span>
-            <input type="text" class="cli-cmd-input" id="pc-cmd-input" autofocus autocomplete="off" spellcheck="false" style="flex:1; background:transparent; border:none; outline:none; color:#ffffff; font-family:'Consolas',monospace; font-size:12px;">
-          </div>
-        </div>
+        <div class="cli-term-host" id="pc-term-host"></div>
       </div>
     `;
-
     document.getElementById('btn-back-desktop').addEventListener('click', () => this.renderDesktopTab(dev));
-
-    const scroll = document.getElementById('pc-cmd-scroll');
-    const input = document.getElementById('pc-cmd-input');
-    input.focus();
-
-    input.addEventListener('keydown', async (e) => {
-      if (e.key === 'Enter') {
-        const val = input.value.trim();
-        input.value = '';
-        scroll.innerText += `${val}\n`;
-
-        const parts = val.split(/\s+/);
-        const cmd = parts[0].toLowerCase();
-
-        if (cmd === 'ipconfig') {
-          scroll.innerText += `
-FastEthernet0 Connection:
-   Connection-specific DNS Suffix..:
-   Link-local IPv6 Address.........: fe80::${dev.id.replace('dev_', '')}
-   IPv4 Address....................: ${dev.ip || '0.0.0.0'}
-   Subnet Mask.....................: ${dev.mask || '0.0.0.0'}
-   Default Gateway.................: ${dev.gateway || '0.0.0.0'}
-   Physical Address................: ${dev.mac}
-\nC:\\>`;
-        } else if (cmd === 'ping') {
-          if (!parts[1]) {
-            scroll.innerText += `\nUsage: ping <ip-address>\n\nC:\\>`;
-          } else {
-            scroll.innerText += `\nPinging ${parts[1]} with 32 bytes of data:\n`;
-            input.disabled = true;
-            const res = await this.topology.simulatePing(dev.id, parts[1]);
-            scroll.innerText += `\n${res.output}\n\nC:\\>`;
-            input.disabled = false;
-            input.focus();
-          }
-        } else if (cmd === 'tracert') {
-          const target = parts[1] || '192.168.1.1';
-          scroll.innerText += `\nTracing route to ${target} over a maximum of 30 hops:\n  1   <1 ms   <1 ms   <1 ms  ${target}\nTrace complete.\n\nC:\\>`;
-        } else if (cmd === 'arp' && parts[1] === '-a') {
-          scroll.innerText += `\nInterface: ${dev.ip || '192.168.1.10'} --- 0x2\n  Internet Address      Physical Address      Type\n  192.168.1.1           0001.96E2.3401        dynamic\n\nC:\\>`;
-        } else if (cmd === 'cls') {
-          scroll.innerText = 'C:\\>';
-        } else if (cmd === 'help') {
-          scroll.innerText += `\nComandos disponibles en Packet Tracer:
-  ipconfig [/all]    Muestra parámetros de red y adaptadores
-  ping <ip>          Envía paquetes ICMP Echo a un equipo remoto
-  tracert <ip>       Traza los saltos hasta el destino
-  arp -a             Muestra la tabla de resolución de direcciones ARP
-  cls                Limpia la pantalla
-\nC:\\>`;
-        } else if (val) {
-          scroll.innerText += `'${val}' is not recognized as an internal or external command.\n\nC:\\>`;
-        } else {
-          scroll.innerText += `\nC:\\>`;
-        }
-        scroll.scrollTop = scroll.scrollHeight;
-      }
-    });
+    this.mountTerminal(document.getElementById('pc-term-host'), this.getShell(dev), 'pc');
   }
 
   renderPCWebBrowser(dev) {
@@ -1737,13 +1790,13 @@ FastEthernet0 Connection:
         <div class="desktop-subapp-topbar">
           <div class="desktop-subapp-title">
             <img src="assets/desktop/terminal.png" width="16" height="16">
-            <span>Terminal (RS-232 Console)</span>
+            <span>Terminal</span>
           </div>
-          <button class="desktop-btn-back" id="btn-back-desktop">◄ Back to Desktop</button>
+          <button class="desktop-btn-back" id="btn-back-desktop">X</button>
         </div>
         <div id="term-dialog" style="padding: 24px; max-width: 400px;">
           <h4 style="font-size:12px; font-weight:700; margin-bottom:12px;">Terminal Configuration</h4>
-          <div class="cfg-row-flex"><span class="cfg-label-fixed">Bits per second:</span><select class="cfg-input-text"><option selected>9600</option></select></div>
+          <div class="cfg-row-flex"><span class="cfg-label-fixed">Bits Per Second:</span><select class="cfg-input-text"><option selected>9600</option><option>19200</option><option>38400</option><option>115200</option></select></div>
           <div class="cfg-row-flex"><span class="cfg-label-fixed">Data Bits:</span><select class="cfg-input-text"><option selected>8</option></select></div>
           <div class="cfg-row-flex"><span class="cfg-label-fixed">Parity:</span><select class="cfg-input-text"><option selected>None</option></select></div>
           <div class="cfg-row-flex"><span class="cfg-label-fixed">Stop Bits:</span><select class="cfg-input-text"><option selected>1</option></select></div>
@@ -1752,44 +1805,22 @@ FastEthernet0 Connection:
             <button class="cfg-action-button" id="btn-term-connect" style="padding:4px 18px; font-weight:700;">OK</button>
           </div>
         </div>
-        <div id="term-console-view" style="display:none; flex:1; flex-direction:column; background:#000; padding:10px;">
-          <div class="cli-scroll" id="term-scroll" style="flex:1; overflow-y:auto; color:#22c55e; font-family:'Consolas',monospace; font-size:12px; white-space:pre-wrap;">Connected to Console port (9600-8-N-1).\nPress RETURN to get started!\n</div>
-          <div style="display:flex; align-items:center; gap:4px; margin-top:4px;">
-            <span style="color:#22c55e; font-family:'Consolas',monospace; font-size:12px;" id="term-prompt">Router></span>
-            <input type="text" id="term-input" style="flex:1; background:transparent; border:none; outline:none; color:#fff; font-family:'Consolas',monospace; font-size:12px;">
-          </div>
-        </div>
+        <div class="cli-term-host" id="term-host" style="display:none;"></div>
       </div>
     `;
-
     document.getElementById('btn-back-desktop').addEventListener('click', () => this.renderDesktopTab(dev));
-
     document.getElementById('btn-term-connect').addEventListener('click', () => {
       document.getElementById('term-dialog').style.display = 'none';
-      const termView = document.getElementById('term-console-view');
-      termView.style.display = 'flex';
-      const termInput = document.getElementById('term-input');
-      const termScroll = document.getElementById('term-scroll');
-      const termPrompt = document.getElementById('term-prompt');
-      termInput.focus();
-
-      termInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-          const val = termInput.value;
-          termInput.value = '';
-          termScroll.innerText += `\n${termPrompt.innerText} ${val}\n`;
-          if (val === 'enable' || val === 'en') {
-            termPrompt.innerText = 'Router#';
-          } else if (val === 'conf t') {
-            termPrompt.innerText = 'Router(config)#';
-          } else if (val === 'exit') {
-            termPrompt.innerText = 'Router>';
-          } else if (val) {
-            termScroll.innerText += `% Invalid command or syntax.\n`;
-          }
-          termScroll.scrollTop = termScroll.scrollHeight;
-        }
-      });
+      const host = document.getElementById('term-host');
+      host.style.display = 'flex';
+      const rs = dev.getInterface('RS 232');
+      const remote = rs && rs.connectedCable && rs.connectedCable.isCompatible ? rs.connectedRemoteInterface.device : null;
+      if (!remote || remote.isPoweredOff) {
+        // Like PT: an unconnected console shows an empty terminal
+        host.innerHTML = '<div class="term-view term-ios"><span class="term-out"></span></div>';
+        return;
+      }
+      this.mountTerminal(host, this.getCLI(remote), 'ios');
     });
   }
 
@@ -1845,69 +1876,41 @@ FastEthernet0 Connection:
             <img src="assets/desktop/SSH.png" width="16" height="16">
             <span>Telnet / SSH Client</span>
           </div>
-          <button class="desktop-btn-back" id="btn-back-desktop">◄ Back to Desktop</button>
+          <button class="desktop-btn-back" id="btn-back-desktop">X</button>
         </div>
         <div id="ssh-connect-box" style="padding: 20px; max-width: 440px;">
-          <div class="cfg-radio-group">
-            <label class="cfg-radio-label"><input type="radio" name="ssh-proto" id="proto-telnet" checked> Telnet</label>
-            <label class="cfg-radio-label"><input type="radio" name="ssh-proto" id="proto-ssh"> SSH</label>
+          <div class="cfg-row-flex">
+            <span class="cfg-label-fixed">Connection Type</span>
+            <select class="cfg-input-text" id="ssh-proto"><option value="telnet">Telnet</option><option value="ssh">SSH</option></select>
           </div>
           <div class="cfg-row-flex">
-            <span class="cfg-label-fixed">Host IP:</span>
-            <input type="text" class="cfg-input-text" id="ssh-ip" value="192.168.1.1">
+            <span class="cfg-label-fixed">Host Name:</span>
+            <input type="text" class="cfg-input-text" id="ssh-ip" value="${escapeHtml(dev.gateway || '')}">
           </div>
-          <div class="cfg-row-flex">
-            <span class="cfg-label-fixed">Port:</span>
-            <input type="number" class="cfg-input-text" id="ssh-port" value="23" style="max-width:80px;">
-          </div>
-          <div class="cfg-row-flex">
+          <div class="cfg-row-flex" id="ssh-user-row" style="display:none;">
             <span class="cfg-label-fixed">Username:</span>
-            <input type="text" class="cfg-input-text" id="ssh-user" value="cisco">
+            <input type="text" class="cfg-input-text" id="ssh-user" value="">
           </div>
           <button class="cfg-action-button" id="btn-ssh-connect" style="margin-top:12px; padding:4px 20px; font-weight:700;">Connect</button>
         </div>
-        <div id="ssh-terminal-box" style="display:none; flex:1; flex-direction:column; background:#000; padding:10px;">
-          <div class="cli-scroll" id="ssh-scroll" style="flex:1; overflow-y:auto; color:#22c55e; font-family:'Consolas',monospace; font-size:12px; white-space:pre-wrap;"></div>
-          <div style="display:flex; align-items:center; gap:4px; margin-top:4px;">
-            <span style="color:#22c55e; font-family:'Consolas',monospace; font-size:12px;" id="ssh-prompt">Router#</span>
-            <input type="text" id="ssh-input" style="flex:1; background:transparent; border:none; outline:none; color:#fff; font-family:'Consolas',monospace; font-size:12px;">
-          </div>
-        </div>
+        <div class="cli-term-host" id="ssh-host" style="display:none;"></div>
       </div>
     `;
-
     document.getElementById('btn-back-desktop').addEventListener('click', () => this.renderDesktopTab(dev));
-
-    document.getElementById('proto-telnet').addEventListener('change', () => {
-      document.getElementById('ssh-port').value = '23';
+    document.getElementById('ssh-proto').addEventListener('change', (e) => {
+      document.getElementById('ssh-user-row').style.display = e.target.value === 'ssh' ? 'flex' : 'none';
     });
-    document.getElementById('proto-ssh').addEventListener('change', () => {
-      document.getElementById('ssh-port').value = '22';
-    });
-
-    document.getElementById('btn-ssh-connect').addEventListener('click', () => {
-      const targetIp = document.getElementById('ssh-ip').value.trim();
+    document.getElementById('btn-ssh-connect').addEventListener('click', async () => {
+      const ip = document.getElementById('ssh-ip').value.trim();
+      const proto = document.getElementById('ssh-proto').value;
       document.getElementById('ssh-connect-box').style.display = 'none';
-      const termBox = document.getElementById('ssh-terminal-box');
-      termBox.style.display = 'flex';
-      const scroll = document.getElementById('ssh-scroll');
-      const input = document.getElementById('ssh-input');
-      scroll.innerText = `Trying ${targetIp} ... Open\nUser Access Verification\nCisco IOS Software, C2900 Software\n\nRouter#`;
-      input.focus();
-
-      input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-          const val = input.value;
-          input.value = '';
-          scroll.innerText += `${val}\n`;
-          if (val === 'exit') {
-            scroll.innerText += `\n[Connection to ${targetIp} closed by foreign host]\n`;
-          } else {
-            scroll.innerText += `Building configuration...\n[OK]\nRouter#`;
-          }
-          scroll.scrollTop = scroll.scrollHeight;
-        }
-      });
+      const host = document.getElementById('ssh-host');
+      host.style.display = 'flex';
+      const shell = new PCShell(dev, this.topology);
+      shell.transcript = '';
+      this.mountTerminal(host, shell, 'ios');
+      if (proto === 'ssh') shell.print(`Trying ${ip} ...\n% Connection refused by remote host\n`);
+      else await shell.telnet(ip);
     });
   }
 
@@ -2142,7 +2145,7 @@ FastEthernet0 Connection:
     }
 
     sidebarTreeHtml += `<div class="cfg-tree-header">INTERFACE</div>`;
-    dev.interfaces.forEach(i => {
+    dev.interfaces.filter(i => i.type !== 'Console' && i.type !== 'RS232').forEach(i => {
       const isSel = (activeView === 'interface' && activeIfaceName === i.name);
       sidebarTreeHtml += `<div class="cfg-tree-item ${isSel ? 'active' : ''}" data-view="interface" data-iface="${i.name}">${i.name}</div>`;
     });
@@ -2605,15 +2608,12 @@ FastEthernet0 Connection:
     const radDhcp = document.getElementById('pc-ip4-dhcp');
     const radStatic = document.getElementById('pc-ip4-static');
     if (radDhcp && radStatic) {
-      radDhcp.addEventListener('change', () => {
+      radDhcp.addEventListener('change', async () => {
         if (radDhcp.checked) {
           dev.ipType = 'dhcp';
-          dev.ip = '192.168.0.' + (Math.floor(Math.random() * 50) + 100);
-          dev.mask = '255.255.255.0';
-          dev.gateway = '192.168.0.1';
-          dev.dns = '0.0.0.0';
-          this.topology.emit('topology-changed');
+          const msg = await this.requestDhcpFor(dev);
           this.renderConfigTab(dev);
+          this.flashStatus(msg);
         }
       });
       radStatic.addEventListener('change', () => {
@@ -2627,14 +2627,16 @@ FastEthernet0 Connection:
     const btnNvramSave = document.getElementById('cfg-btn-nvram-save');
     if (btnNvramSave) {
       btnNvramSave.addEventListener('click', () => {
-        appendIosCmd(`${dev.name}#copy running-config startup-config\nDestination filename [startup-config]?\nBuilding configuration...\n[OK]`);
+        this.topology.saveStartup(dev, this.getCLI(dev).runningConfig());
+        appendIosCmd(`${dev.hostname}#copy running-config startup-config\nDestination filename [startup-config]?\nBuilding configuration...\n[OK]`);
       });
     }
 
     const btnNvramErase = document.getElementById('cfg-btn-nvram-erase');
     if (btnNvramErase) {
       btnNvramErase.addEventListener('click', () => {
-        appendIosCmd(`${dev.name}#write erase\nErasing the nvram filesystem will remove all configuration files! Continue? [confirm]\n[OK]\nErase of nvram: complete`);
+        dev.startupConfig = null;
+        appendIosCmd(`${dev.hostname}#write erase\nErasing the nvram filesystem will remove all configuration files! Continue? [confirm]\n[OK]\nErase of nvram: complete`);
       });
     }
 
@@ -3091,16 +3093,14 @@ FastEthernet0 Connection:
 
     document.getElementById('chassis-power-switch').addEventListener('click', () => {
       dev.isPoweredOff = !dev.isPoweredOff;
-      if (!this.clis.has(dev.id)) {
-        this.clis.set(dev.id, new CiscoIOSCLI(dev, this.topology));
+      // Power cycling discards the running-config: the device boots from startup-config
+      this.clis.delete(dev.id);
+      if (!dev.isPoweredOff && (dev.type === 'router' || dev.type === 'switch')) {
+        const vlans = dev.vlans ? JSON.parse(JSON.stringify(dev.vlans)) : null;
+        this.topology.reloadDevice(dev);
+        if (vlans) dev.vlans = vlans;
       }
-      const cli = this.clis.get(dev.id);
-
-      if (dev.isPoweredOff) {
-        dev._iosCommandsLog = (dev._iosCommandsLog || '') + `\n% System shut down. Power off.\n`;
-      } else {
-        dev._iosCommandsLog = (dev._iosCommandsLog || '') + cli.getBootOutput();
-      }
+      for (const d of this.topology.devices.values()) d.arpTable.clear();
 
       this.topology.emit('topology-changed');
       this.renderPhysicalTab(dev);
@@ -3164,9 +3164,649 @@ FastEthernet0 Connection:
       </div>
     `;
   }
+  /* ==========================================================================
+     Helpers
+     ========================================================================== */
+
+  deviceIpLabel(dev) {
+    if (dev.type === 'router' || dev.type === 'switch' || dev.type === 'cloud') return '';
+    if (dev.type === 'wireless_router') return dev.routerIP || '';
+    return dev.ip || '';
+  }
+
+  flashStatus(msg) {
+    let el = document.getElementById('pt-toast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'pt-toast';
+      el.className = 'pt-toast';
+      document.body.appendChild(el);
+    }
+    el.textContent = msg;
+    el.classList.add('show');
+    clearTimeout(this._toastTimer);
+    this._toastTimer = setTimeout(() => el.classList.remove('show'), 3200);
+  }
+
+  async requestDhcpFor(dev) {
+    const lease = await this.topology.requestDHCP(dev);
+    if (lease) return 'DHCP request successful.';
+    // APIPA fallback, exactly like PT
+    const mac = dev.mac.replace(/\./g, '');
+    dev.ip = `169.254.${parseInt(mac.slice(8, 10), 16)}.${parseInt(mac.slice(10, 12), 16) || 1}`;
+    dev.mask = '255.255.0.0';
+    dev.gateway = '';
+    dev.dns = '0.0.0.0';
+    this.topology.emit('topology-changed');
+    return 'DHCP failed. APIPA is being used.';
+  }
+
+  clearTempCable() {
+    const t = document.getElementById('temp-cable-line');
+    if (t) t.remove();
+  }
+
+  /* ==========================================================================
+     Menus, files and keyboard
+     ========================================================================== */
+
+  initMenus() {
+    const menus = {
+      File: [
+        { label: 'New', key: 'Ctrl+N', run: () => this.newFile() },
+        { label: 'Open...', key: 'Ctrl+O', run: () => this.openFile() },
+        { label: 'Save', key: 'Ctrl+S', run: () => this.saveFile() },
+        { label: 'Save As...', key: 'Ctrl+Shift+S', run: () => this.saveFile(true) },
+        '-',
+        ...SAMPLE_LABS.map(l => ({ label: `Sample: ${l.name}`, run: () => this.loadSampleLab(l.id) })),
+        '-',
+        { label: 'Print...', key: 'Ctrl+P', run: () => window.print() }
+      ],
+      Edit: [
+        { label: 'Select', key: 'Esc', run: () => this.setTool('select', 'tool-select') },
+        { label: 'Delete', key: 'Del', run: () => this.setTool('delete', 'tool-delete') },
+        { label: 'Inspect', key: 'I', run: () => this.setTool('inspect', 'tool-inspect') }
+      ],
+      Options: [
+        { label: () => `${this.showPortLabels ? '✓ ' : ''}Always Show Port Labels in Logical Workspace`, run: () => { this.showPortLabels = !this.showPortLabels; this.renderCanvas(); } },
+        { label: () => `${document.body.classList.contains('hide-ip-labels') ? '' : '✓ '}Show Device IP Labels`, run: () => document.body.classList.toggle('hide-ip-labels') }
+      ],
+      View: [
+        { label: 'Realtime Mode', key: 'Shift+R', run: () => this.setSimulationMode(false) },
+        { label: 'Simulation Mode', key: 'Shift+S', run: () => this.setSimulationMode(true) }
+      ],
+      Tools: [
+        { label: 'Add Simple PDU', key: 'P', run: () => this.setTool('pdu_simple', 'tool-pdu-simple') },
+        { label: 'Power Cycle Devices', run: () => document.getElementById('btn-sim-reset').click() }
+      ],
+      Extensions: [{ label: 'Activity Wizard (no disponible)', disabled: true }],
+      Window: [{ label: 'Toggle PDU List Window', run: () => document.getElementById('btn-toggle-pdu-win').click() }],
+      Help: [
+        { label: 'Supported IOS / PC Commands', run: () => this.showCommandHelp() },
+        { label: 'About', run: () => this.showInfoWindow('About', '<p><b>Cisco Packet Tracer — Web Edition</b></p><p>Simulador de redes en el navegador: ARP, switching con VLAN/802.1Q, enrutamiento estático/RIP/OSPF, DHCP, ACL, Telnet y modo simulación.</p>') }
+      ]
+    };
+
+    const dropdown = document.createElement('div');
+    dropdown.className = 'pt-menu-dropdown';
+    dropdown.style.display = 'none';
+    document.body.appendChild(dropdown);
+    let openItem = null;
+    const close = () => {
+      dropdown.style.display = 'none';
+      if (openItem) openItem.classList.remove('open');
+      openItem = null;
+    };
+    const open = (item, name) => {
+      if (openItem) openItem.classList.remove('open');
+      openItem = item;
+      item.classList.add('open');
+      dropdown.innerHTML = '';
+      for (const entry of menus[name] || []) {
+        if (entry === '-') {
+          dropdown.insertAdjacentHTML('beforeend', '<div class="pt-menu-sep"></div>');
+          continue;
+        }
+        const row = document.createElement('div');
+        row.className = 'pt-menu-row' + (entry.disabled ? ' disabled' : '');
+        const label = typeof entry.label === 'function' ? entry.label() : entry.label;
+        row.innerHTML = `<span>${escapeHtml(label)}</span><span class="pt-menu-key">${entry.key || ''}</span>`;
+        if (!entry.disabled) row.addEventListener('click', (e) => { e.stopPropagation(); close(); entry.run(); });
+        dropdown.appendChild(row);
+      }
+      const r = item.getBoundingClientRect();
+      dropdown.style.left = `${r.left}px`;
+      dropdown.style.top = `${r.bottom}px`;
+      dropdown.style.display = 'block';
+    };
+    document.querySelectorAll('.pt-menu-bar .menu-item').forEach(item => {
+      const name = item.textContent.trim();
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (openItem === item) close(); else open(item, name);
+      });
+      item.addEventListener('mouseenter', () => { if (openItem && openItem !== item) open(item, name); });
+    });
+    document.addEventListener('click', close);
+
+    this.fileInput = document.createElement('input');
+    this.fileInput.type = 'file';
+    this.fileInput.accept = '.json,.ptw';
+    this.fileInput.style.display = 'none';
+    document.body.appendChild(this.fileInput);
+    this.fileInput.addEventListener('change', async () => {
+      const f = this.fileInput.files[0];
+      this.fileInput.value = '';
+      if (!f) return;
+      try {
+        this.loadData(JSON.parse(await f.text()));
+        this.fileName = f.name;
+        this.updateTitle();
+        this.flashStatus(`Abierto: ${f.name}`);
+      } catch (e) {
+        this.flashStatus(`No se pudo abrir el archivo: ${e.message}`);
+      }
+    });
+  }
+
+  initKeyboard() {
+    document.addEventListener('keydown', (e) => {
+      const inField = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName) || document.activeElement.isContentEditable;
+      const k = e.key.toLowerCase();
+      if (e.ctrlKey && !e.altKey) {
+        if (k === 's') { e.preventDefault(); this.saveFile(e.shiftKey); return; }
+        if (k === 'o') { e.preventDefault(); this.openFile(); return; }
+        if (k === 'n' && !inField) { e.preventDefault(); this.newFile(); return; }
+      }
+      if (inField || e.ctrlKey || e.altKey || e.metaKey) return;
+      if (e.key === 'Escape') {
+        this.connectingDevA = null;
+        this.clearTempCable();
+        this.portPicker.style.display = 'none';
+        this.hideInspectMenu();
+        this.setTool('select', 'tool-select');
+      } else if (e.key === 'Delete') this.setTool('delete', 'tool-delete');
+      else if (k === 'i') this.setTool('inspect', 'tool-inspect');
+      else if (k === 'p') this.setTool('pdu_simple', 'tool-pdu-simple');
+      else if (k === 'n') this.setTool('note', 'tool-note');
+      else if (e.shiftKey && k === 'r') this.setSimulationMode(false);
+      else if (e.shiftKey && k === 's') this.setSimulationMode(true);
+    });
+  }
+
+  serializeAll() {
+    return this.topology.serialize({ notes: this.notes, shapes: this.shapes });
+  }
+
+  loadData(data) {
+    this.topology.load(data);
+    this.notes = data.notes || [];
+    this.shapes = data.shapes || [];
+    this.clis.clear();
+    this.shells.clear();
+    this.viewport.querySelectorAll('.pt-device-node').forEach(n => n.remove());
+    this.closeModal();
+    this.renderCanvas();
+    this.renderPDUTable();
+  }
+
+  closeModal() {
+    if (this.modal) this.modal.style.display = 'none';
+  }
+
+  newFile() {
+    if (this.topology.devices.size && !confirm('¿Crear un archivo nuevo? Se perderán los cambios no guardados.')) return;
+    this.topology.clear();
+    this.shapes = [];
+    this.notes = [];
+    this.clis.clear();
+    this.shells.clear();
+    this.fileName = null;
+    this.updateTitle();
+    this.closeModal();
+    this.renderCanvas();
+  }
+
+  openFile() {
+    this.fileInput.click();
+  }
+
+  saveFile(saveAs = false) {
+    let name = this.fileName;
+    if (!name || saveAs) {
+      name = prompt('Nombre del archivo:', name || 'topologia.ptw');
+      if (!name) return;
+      if (!/\.(ptw|json)$/i.test(name)) name += '.ptw';
+    }
+    const blob = new Blob([JSON.stringify(this.serializeAll(), null, 1)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    this.fileName = name;
+    this.updateTitle();
+    this.flashStatus(`Guardado: ${name}`);
+  }
+
+  updateTitle() {
+    const t = document.querySelector('.pt-title-text');
+    if (t) t.textContent = this.fileName ? `Cisco Packet Tracer - ${this.fileName}` : 'Cisco Packet Tracer';
+  }
+
+  scheduleAutosave() {
+    clearTimeout(this._autosaveTimer);
+    this._autosaveTimer = setTimeout(() => {
+      try {
+        localStorage.setItem('pt-web-autosave', JSON.stringify(this.serializeAll()));
+      } catch (e) { /* storage unavailable: autosave is best-effort */ }
+    }, 800);
+  }
+
+  restoreAutosave() {
+    try {
+      const raw = localStorage.getItem('pt-web-autosave');
+      if (!raw) return false;
+      const data = JSON.parse(raw);
+      if (!data.devices || !data.devices.length) return false;
+      this.loadData(data);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  async loadSampleLab(id) {
+    if (this.topology.devices.size && !confirm('¿Cargar el laboratorio de ejemplo? Se reemplazará la topología actual.')) return;
+    const lab = SAMPLE_LABS.find(l => l.id === id);
+    this.notes = [];
+    this.shapes = [];
+    this.clis.clear();
+    this.shells.clear();
+    this.closeModal();
+    await buildLab(this.topology, lab);
+    this.notes = (lab.notes || []).map((n, k) => ({ id: 'note_lab_' + k, ...n }));
+    this.fileName = null;
+    this.updateTitle();
+    this.renderCanvas();
+    this.flashStatus(`Laboratorio cargado: ${lab.name}`);
+  }
+
+  /* ==========================================================================
+     Simulation mode
+     ========================================================================== */
+
+  setSimulationMode(on) {
+    const topo = this.topology;
+    topo.isSimulationMode = on;
+    document.getElementById('tab-realtime').classList.toggle('active', !on);
+    document.getElementById('tab-simulation').classList.toggle('active', on);
+    this.simPanel.style.display = on ? 'flex' : 'none';
+    document.body.classList.toggle('sim-mode', on);
+    if (!on) {
+      topo.setSimPlaying(true); // flush anything waiting
+      topo.simPlaying = false;
+      topo.resetSimulation();
+    }
+    this.renderSimPanel();
+  }
+
+  initSimPanel() {
+    const panel = document.createElement('div');
+    panel.className = 'sim-panel';
+    panel.style.display = 'none';
+    panel.innerHTML = `
+      <div class="sim-panel-title">Simulation Panel</div>
+      <div class="sim-panel-section">Event List</div>
+      <div class="sim-event-table-wrap">
+        <table class="sim-event-table">
+          <thead><tr><th>Vis.</th><th>Time(sec)</th><th>Last Device</th><th>At Device</th><th>Type</th></tr></thead>
+          <tbody id="sim-event-body"></tbody>
+        </table>
+      </div>
+      <div class="sim-status" id="sim-status"></div>
+      <div class="sim-controls">
+        <button class="sim-ctrl-btn" id="sim-btn-reset" title="Reset Simulation">Reset Simulation</button>
+      </div>
+      <div class="sim-panel-section">Play Controls</div>
+      <div class="sim-play-row">
+        <button class="sim-play-btn" id="sim-btn-back" title="Back" disabled>&#9198;</button>
+        <button class="sim-play-btn" id="sim-btn-play" title="Play (Auto Capture)">&#9654;</button>
+        <button class="sim-play-btn" id="sim-btn-step" title="Capture/Forward">&#9197;</button>
+      </div>
+      <div class="sim-panel-section">Event List Filters - Visible Events</div>
+      <div class="sim-filters" id="sim-filters"></div>
+    `;
+    this.viewport.parentElement.appendChild(panel);
+    this.simPanel = panel;
+    const topo = this.topology;
+    panel.querySelector('#sim-btn-reset').addEventListener('click', () => topo.resetSimulation());
+    panel.querySelector('#sim-btn-play').addEventListener('click', () => topo.setSimPlaying(!topo.simPlaying));
+    panel.querySelector('#sim-btn-step').addEventListener('click', () => {
+      if (topo.simPlaying) topo.setSimPlaying(false);
+      topo.stepForward();
+      this.renderSimPanel();
+    });
+    const filters = panel.querySelector('#sim-filters');
+    for (const t of ['ARP', 'ICMP', 'DHCP']) {
+      const lab = document.createElement('label');
+      lab.innerHTML = `<input type="checkbox" ${topo.simFilters[t] ? 'checked' : ''}> ${t}`;
+      lab.querySelector('input').addEventListener('change', (e) => { topo.simFilters[t] = e.target.checked; });
+      filters.appendChild(lab);
+    }
+    topo.on((name) => {
+      if (name === 'sim-events-changed' || name === 'sim-state') this.renderSimPanel();
+    });
+  }
+
+  renderSimPanel() {
+    if (!this.simPanel) return;
+    const topo = this.topology;
+    const body = this.simPanel.querySelector('#sim-event-body');
+    const rows = topo.simEventList.slice(-200);
+    body.innerHTML = rows.map(ev => `<tr data-id="${ev.id}"><td><span class="sim-env" style="background:${ev.color}"></span></td><td>${ev.time}</td><td>${escapeHtml(ev.last)}</td><td>${escapeHtml(ev.at)}</td><td>${ev.type}</td></tr>`).join('');
+    body.querySelectorAll('tr').forEach(tr => tr.addEventListener('click', () => {
+      const ev = topo.simEventList.find(x => String(x.id) === tr.dataset.id);
+      if (ev) this.showPduInfo(ev);
+    }));
+    const wrap = this.simPanel.querySelector('.sim-event-table-wrap');
+    wrap.scrollTop = wrap.scrollHeight;
+    this.simPanel.querySelector('#sim-btn-play').innerHTML = topo.simPlaying ? '&#10074;&#10074;' : '&#9654;';
+    const waiting = topo._stepWaiters.length > 0;
+    this.simPanel.querySelector('#sim-btn-step').classList.toggle('pulse', waiting && !topo.simPlaying);
+    this.simPanel.querySelector('#sim-status').textContent = waiting && !topo.simPlaying
+      ? 'Paquete en espera: pulsa Capture/Forward (⏭) o Play (▶).'
+      : (topo.simPlaying ? 'Reproduciendo…' : 'Crea un PDU o haz ping desde un dispositivo.');
+  }
+
+  showPduInfo(ev) {
+    const i = ev.info || {};
+    let l2 = `Ethernet II Header ${(i.srcMac || '').toUpperCase()} &gt;&gt; ${(i.dstMac || '').toUpperCase()}`;
+    if (i.vlan != null) l2 += ` (802.1Q VLAN ${i.vlan})`;
+    let l3 = '';
+    let l4 = '';
+    if (ev.type === 'ARP') {
+      l3 = i.arpReply ? `ARP Reply: ${i.srcIP} is at ${(i.srcMac || '').toUpperCase()}` : `ARP Request: Who has ${i.arpTarget || i.dstIP}? Tell ${i.srcIP}`;
+    } else if (ev.type === 'DHCP') {
+      l3 = `IP Header Src. IP: ${i.srcIP}, Dest. IP: ${i.dstIP}`;
+      l4 = `UDP Src. Port: ${i.dhcp === 'DISCOVER' ? 68 : 67}, Dst. Port: ${i.dhcp === 'DISCOVER' ? 67 : 68} — DHCP ${i.dhcp}`;
+    } else {
+      l3 = `IP Header Src. IP: ${i.srcIP}, Dest. IP: ${i.dstIP}${i.ttl != null ? `, TTL: ${i.ttl}` : ''}`;
+      l4 = `ICMP Message Type: ${i.kind === 'ICMP Reply' ? '0 (Echo Reply)' : '8 (Echo Request)'}`;
+    }
+    const layers = [
+      ['Layer 7', ''], ['Layer 6', ''], ['Layer 5', ''],
+      ['Layer 4', ev.type === 'DHCP' ? l4 : ''],
+      ['Layer 3', ev.type === 'ICMP' ? `${l3}<br>${l4}` : l3],
+      ['Layer 2', l2],
+      ['Layer 1', `Port(s): ${escapeHtml(i.inPort || '')}`]
+    ];
+    const html = `<div class="pdu-info-head">At Device: <b>${escapeHtml(ev.at)}</b><br>Source: ${escapeHtml(ev.last)}<br>Destination: ${escapeHtml(i.dstIP || i.arpTarget || '')}</div>
+      <div class="pdu-osi"><div class="pdu-osi-title">OSI Model — In Layers</div>${layers.map(([n, v]) => `<div class="pdu-osi-row ${v ? '' : 'empty'}"><span>${n}:</span> ${v}</div>`).join('')}</div>`;
+    this.showInfoWindow(`PDU Information at Device: ${ev.at}`, html);
+  }
+
+  /* ==========================================================================
+     Inspect tool, info windows and hover tooltip
+     ========================================================================== */
+
+  showInspectMenu(dev, x, y) {
+    this.hideInspectMenu();
+    const items = [['ARP Table', 'arp']];
+    if (dev.type === 'switch' && !dev.isHub) items.push(['MAC Table', 'mac']);
+    if (dev.type === 'router') items.push(['Routing Table', 'route'], ['NAT/ACL (Access Lists)', 'acl']);
+    if (dev.type === 'router' || (dev.type === 'switch' && !dev.isHub)) items.push(['Port Status Summary Table', 'ports']);
+    const menu = document.createElement('div');
+    menu.className = 'pt-inspect-menu';
+    menu.innerHTML = items.map(([l, k]) => `<div class="pt-menu-row" data-k="${k}">${l}</div>`).join('');
+    menu.style.left = `${x}px`;
+    menu.style.top = `${y}px`;
+    document.body.appendChild(menu);
+    this._inspectMenu = menu;
+    menu.querySelectorAll('.pt-menu-row').forEach(r => r.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.hideInspectMenu();
+      this.showInspectTable(dev, r.dataset.k);
+    }));
+    setTimeout(() => document.addEventListener('click', this._hideInspect = () => this.hideInspectMenu(), { once: true }), 0);
+  }
+
+  hideInspectMenu() {
+    if (this._inspectMenu) this._inspectMenu.remove();
+    this._inspectMenu = null;
+  }
+
+  showInspectTable(dev, kind) {
+    const table = (head, rows) => `<table class="inspect-table"><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.length ? rows.map(r => `<tr>${r.map(c => `<td>${escapeHtml(c)}</td>`).join('')}</tr>`).join('') : `<tr><td colspan="${head.length}" class="empty">(vacía)</td></tr>`}</tbody></table>`;
+    let html = '';
+    let title = '';
+    if (kind === 'arp') {
+      title = `ARP Table for ${dev.name}`;
+      html = table(['IP Address', 'Hardware Address', 'Interface'], [...dev.arpTable].map(([ip, e]) => [ip, e.mac, e.iface]));
+    } else if (kind === 'mac') {
+      title = `MAC Table for ${dev.name}`;
+      html = table(['VLAN', 'Mac Address', 'Port'], [...dev.macTable.values()].map(e => [String(e.vlan), e.mac, e.port]));
+    } else if (kind === 'route') {
+      title = `Routing Table for ${dev.name}`;
+      const routes = dev.getRoutes(this.topology).filter(r => r.code !== 'L');
+      html = table(['Type', 'Network', 'Port', 'Next Hop IP', 'Metric'], routes.map(r => [r.code, `${r.network}/${IPUtils.maskToPrefix(r.mask)}`, r.iface || '---', r.nextHop || '---', `${r.ad}/${r.metric}`]));
+    } else if (kind === 'acl') {
+      title = `Access Lists for ${dev.name}`;
+      const rows = [];
+      for (const [n, rules] of Object.entries(dev.acls || {})) for (const r of rules) rows.push([n, r.text, String(r.matches || 0)]);
+      html = table(['ACL', 'Rule', 'Matches'], rows);
+    } else if (kind === 'ports') {
+      title = `Port Status Summary Table for ${dev.name}`;
+      html = table(['Port', 'Link', 'VLAN', 'IP Address', 'MAC Address'], dev.interfaces.filter(i => i.isDataPort || i.isVirtual).map(i => [i.name, i.isPhysicalUp ? 'Up' : 'Down', dev.type === 'switch' && i.vlanId == null ? (i.mode === 'trunk' ? '--' : String(i.accessVlan)) : '--', i.ip ? `${i.ip}/${IPUtils.maskToPrefix(i.mask)}` : '<not set>', i.mac]));
+    }
+    this.showInfoWindow(title, html);
+  }
+
+  showInfoWindow(title, html) {
+    const win = document.createElement('div');
+    win.className = 'pt-info-window';
+    win.innerHTML = `<div class="pt-info-title"><span>${escapeHtml(title)}</span><button class="pt-info-close">&#x2715;</button></div><div class="pt-info-body">${html}</div>`;
+    const n = document.querySelectorAll('.pt-info-window').length;
+    win.style.left = `${140 + n * 24}px`;
+    win.style.top = `${110 + n * 24}px`;
+    document.body.appendChild(win);
+    win.querySelector('.pt-info-close').addEventListener('click', () => win.remove());
+    const bar = win.querySelector('.pt-info-title');
+    bar.addEventListener('mousedown', (e) => {
+      const sx = e.clientX - win.offsetLeft, sy = e.clientY - win.offsetTop;
+      const mv = (m) => { win.style.left = `${m.clientX - sx}px`; win.style.top = `${Math.max(0, m.clientY - sy)}px`; };
+      const up = () => { window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); };
+      window.addEventListener('mousemove', mv);
+      window.addEventListener('mouseup', up);
+    });
+    return win;
+  }
+
+  showCommandHelp() {
+    const html = `<div class="help-cols">
+      <div><h4>IOS (Router / Switch)</h4><pre>enable / disable / configure terminal / end
+show running-config | startup-config | version
+show ip interface brief | ip route | ip protocols
+show ip ospf neighbor | ip dhcp binding | access-lists
+show vlan brief | interfaces trunk | mac-address-table
+show interfaces [if] | arp | cdp neighbors | history
+copy running-config startup-config / write memory
+erase startup-config / reload / delete flash:vlan.dat
+hostname / enable secret / banner motd #...#
+interface g0/0 | g0/0.10 | vlan 1 | loopback 0
+interface range f0/1 - 10
+ ip address A M / no shutdown / description
+ switchport mode access|trunk / switchport access vlan N
+ switchport trunk native|allowed vlan ...
+ encapsulation dot1Q N / ip helper-address A
+ ip access-group N in|out / clock rate N
+vlan N / name X
+ip route NET MASK NEXT-HOP|IFACE [AD]
+ip default-gateway A (switch)
+router rip: version 2 / network / no auto-summary
+router ospf 1: network A W area N / router-id
+ passive-interface / default-information originate
+ip dhcp pool X: network / default-router / dns-server
+ip dhcp excluded-address A [B]
+access-list 1-99 (estándar) / 100-199 (extendida)
+line console 0 | vty 0 4: password / login [local]
+username U secret P / service password-encryption
+ping / traceroute / do &lt;cmd&gt; / ? / Tab</pre></div>
+      <div><h4>PC (Command Prompt)</h4><pre>ipconfig [/all | /release | /renew]
+ping [-n N] [-t] A.B.C.D
+tracert A.B.C.D
+arp -a | arp -d
+telnet A.B.C.D
+cls / help</pre>
+      <h4>Atajos</h4><pre>Ctrl+S guardar · Ctrl+O abrir · Ctrl+N nuevo
+Esc seleccionar · Del borrar · I inspeccionar
+P PDU simple · Shift+S simulación · Shift+R realtime</pre></div></div>`;
+    this.showInfoWindow('Comandos soportados', html);
+  }
+
+  initHoverTooltip() {
+    const tip = document.createElement('div');
+    tip.className = 'pt-device-tooltip';
+    tip.style.display = 'none';
+    document.body.appendChild(tip);
+    let timer = null;
+    this.viewport.addEventListener('mouseover', (e) => {
+      const node = e.target.closest && e.target.closest('.pt-device-node');
+      if (!node) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const dev = this.topology.devices.get(node.dataset.id);
+        if (!dev) return;
+        tip.innerHTML = this.tooltipHtml(dev);
+        const r = node.getBoundingClientRect();
+        tip.style.left = `${Math.min(window.innerWidth - 420, r.right + 6)}px`;
+        tip.style.top = `${Math.max(4, r.top)}px`;
+        tip.style.display = 'block';
+      }, 450);
+    });
+    this.viewport.addEventListener('mouseout', (e) => {
+      const node = e.target.closest && e.target.closest('.pt-device-node');
+      if (node && !node.contains(e.relatedTarget)) {
+        clearTimeout(timer);
+        tip.style.display = 'none';
+      }
+    });
+    this.viewport.addEventListener('mousedown', () => { clearTimeout(timer); tip.style.display = 'none'; });
+
+    // Rubber-band cable while choosing the second end
+    this.viewport.addEventListener('mousemove', (e) => {
+      if (!this.connectingDevA || !this.currentTool.startsWith('cable_')) return;
+      const rect = this.viewport.getBoundingClientRect();
+      let line = document.getElementById('temp-cable-line');
+      if (!line) {
+        line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.id = 'temp-cable-line';
+        line.setAttribute('class', 'temp-cable');
+        this.svg.appendChild(line);
+      }
+      line.setAttribute('x1', this.connectingDevA.x);
+      line.setAttribute('y1', this.connectingDevA.y);
+      line.setAttribute('x2', e.clientX - rect.left);
+      line.setAttribute('y2', e.clientY - rect.top);
+    });
+  }
+
+  tooltipHtml(dev) {
+    const isSw = dev.type === 'switch' && !dev.isHub;
+    const rows = dev.interfaces.filter(i => (i.isDataPort || (i.isVirtual && (i.ip || i.vlanId != null))) && (i.connectedCable || i.ip || i.isVirtual)).map(i => {
+      const link = i.isPhysicalUp ? 'Up' : 'Down';
+      const vlan = isSw ? (i.vlanId != null ? String(i.vlanId) : i.mode === 'trunk' ? '--' : String(i.accessVlan)) : null;
+      return `<tr><td>${escapeHtml(i.name)}</td><td class="${link === 'Up' ? 'up' : 'down'}">${link}</td>${isSw ? `<td>${vlan}</td>` : ''}<td>${i.ip ? `${i.ip}/${IPUtils.maskToPrefix(i.mask)}` : '&lt;not set&gt;'}</td><td>${i.mac}</td></tr>`;
+    }).join('');
+    const extra = dev.type === 'pc' || dev.type === 'laptop' || dev.type === 'server' || dev.type === 'printer'
+      ? `<div>Gateway: ${escapeHtml(dev.gateway || '&lt;not set&gt;')}</div><div>DNS Server: ${escapeHtml(dev.dns || '&lt;not set&gt;')}</div>` : '';
+    return `<div class="tt-head">Device Name: <b>${escapeHtml(dev.name)}</b><br>Device Model: ${escapeHtml(dev.model)}${dev.hostname && dev.type !== 'pc' && dev.type !== 'laptop' && dev.type !== 'server' ? `<br>Hostname: ${escapeHtml(dev.hostname)}` : ''}</div>
+      <table class="tt-table"><thead><tr><th>Port</th><th>Link</th>${isSw ? '<th>VLAN</th>' : ''}<th>IP Address</th><th>MAC Address</th></tr></thead><tbody>${rows || `<tr><td colspan="5">No connected ports</td></tr>`}</tbody></table>${extra}`;
+  }
+
+  /* ==========================================================================
+     Server Services tab (DHCP)
+     ========================================================================== */
+
+  renderServicesTab(dev) {
+    const svc = dev.services;
+    const view = dev._svcView || 'DHCP';
+    const list = ['HTTP', 'DHCP', 'DNS'];
+    let panel = '';
+    if (view === 'DHCP') {
+      const d = svc.dhcp;
+      const sel = d.pools[dev._dhcpPoolIdx || 0] || d.pools[0];
+      panel = `
+        <div class="cfg-panel-title">DHCP</div>
+        <div class="cfg-row-flex"><span class="cfg-label-fixed">Service</span>
+          <label class="cfg-radio-label"><input type="radio" name="dhcp-svc" id="dhcp-on" ${d.enabled ? 'checked' : ''}> On</label>
+          <label class="cfg-radio-label"><input type="radio" name="dhcp-svc" id="dhcp-off" ${!d.enabled ? 'checked' : ''}> Off</label></div>
+        <div class="cfg-row-flex"><span class="cfg-label-fixed">Pool Name</span><input class="cfg-input-text" id="dhcp-name" value="${escapeHtml(sel.name)}"></div>
+        <div class="cfg-row-flex"><span class="cfg-label-fixed">Default Gateway</span><input class="cfg-input-text" id="dhcp-gw" value="${escapeHtml(sel.defaultGateway)}"></div>
+        <div class="cfg-row-flex"><span class="cfg-label-fixed">DNS Server</span><input class="cfg-input-text" id="dhcp-dns" value="${escapeHtml(sel.dns)}"></div>
+        <div class="cfg-row-flex"><span class="cfg-label-fixed">Start IP Address</span><input class="cfg-input-text" id="dhcp-start" value="${escapeHtml(sel.startIP)}"></div>
+        <div class="cfg-row-flex"><span class="cfg-label-fixed">Subnet Mask</span><input class="cfg-input-text" id="dhcp-mask" value="${escapeHtml(sel.mask)}"></div>
+        <div class="cfg-row-flex"><span class="cfg-label-fixed">Maximum Number of Users</span><input class="cfg-input-text" id="dhcp-max" value="${escapeHtml(sel.maxUsers)}"></div>
+        <div style="display:flex; gap:8px; margin:8px 0;">
+          <button class="cfg-action-button" id="dhcp-add">Add</button>
+          <button class="cfg-action-button" id="dhcp-save">Save</button>
+          <button class="cfg-action-button" id="dhcp-remove">Remove</button>
+        </div>
+        <table class="cfg-table"><thead><tr><th>Pool Name</th><th>Default Gateway</th><th>DNS Server</th><th>Start IP</th><th>Subnet Mask</th><th>Max User</th><th>Leases</th></tr></thead>
+        <tbody>${d.pools.map((p, k) => `<tr data-k="${k}" class="${p === sel ? 'sel' : ''}"><td>${escapeHtml(p.name)}</td><td>${escapeHtml(p.defaultGateway)}</td><td>${escapeHtml(p.dns)}</td><td>${escapeHtml(p.startIP)}</td><td>${escapeHtml(p.mask)}</td><td>${escapeHtml(p.maxUsers)}</td><td>${Object.keys(p.leases || {}).length}</td></tr>`).join('')}</tbody></table>`;
+    } else {
+      panel = `<div class="cfg-panel-title">${view}</div><div class="cfg-row-flex"><span class="cfg-label-fixed">Service</span><span style="font-size:11px">${view === 'HTTP' ? 'On' : 'Off'} (no simulado)</span></div>`;
+    }
+    this.modalContent.innerHTML = `<div class="config-tab-container"><div class="config-split-view">
+      <div class="config-sidebar-tree"><div class="cfg-tree-header">SERVICES</div>${list.map(n => `<div class="cfg-tree-item ${n === view ? 'active' : ''}" data-v="${n}">${n}</div>`).join('')}</div>
+      <div class="config-main-panel">${panel}</div></div></div>`;
+    this.modalContent.querySelectorAll('.cfg-tree-item').forEach(el => el.addEventListener('click', () => { dev._svcView = el.dataset.v; this.renderServicesTab(dev); }));
+    if (view !== 'DHCP') return;
+    const d = svc.dhcp;
+    document.getElementById('dhcp-on').addEventListener('change', () => { d.enabled = true; this.topology.emit('topology-changed'); });
+    document.getElementById('dhcp-off').addEventListener('change', () => { d.enabled = false; this.topology.emit('topology-changed'); });
+    const read = () => ({
+      name: document.getElementById('dhcp-name').value.trim(),
+      defaultGateway: document.getElementById('dhcp-gw').value.trim(),
+      dns: document.getElementById('dhcp-dns').value.trim(),
+      startIP: document.getElementById('dhcp-start').value.trim(),
+      mask: document.getElementById('dhcp-mask').value.trim(),
+      maxUsers: parseInt(document.getElementById('dhcp-max').value, 10) || 0
+    });
+    const valid = (p) => p.name && IPUtils.isValidIP(p.startIP) && IPUtils.isValidMask(p.mask) && IPUtils.isValidIP(p.defaultGateway || '0.0.0.0') && IPUtils.isValidIP(p.dns || '0.0.0.0');
+    document.getElementById('dhcp-add').addEventListener('click', () => {
+      const p = read();
+      if (!valid(p)) return this.flashStatus('Datos de pool DHCP inválidos.');
+      if (d.pools.some(x => x.name === p.name)) return this.flashStatus('Ya existe un pool con ese nombre.');
+      d.pools.push({ ...p, leases: {} });
+      dev._dhcpPoolIdx = d.pools.length - 1;
+      this.renderServicesTab(dev);
+    });
+    document.getElementById('dhcp-save').addEventListener('click', () => {
+      const p = read();
+      if (!valid(p)) return this.flashStatus('Datos de pool DHCP inválidos.');
+      Object.assign(d.pools[dev._dhcpPoolIdx || 0], p);
+      this.topology.emit('topology-changed');
+      this.renderServicesTab(dev);
+    });
+    document.getElementById('dhcp-remove').addEventListener('click', () => {
+      const k = dev._dhcpPoolIdx || 0;
+      if (k === 0) return this.flashStatus('El pool por defecto (serverPool) no se puede eliminar.');
+      d.pools.splice(k, 1);
+      dev._dhcpPoolIdx = 0;
+      this.renderServicesTab(dev);
+    });
+    this.modalContent.querySelectorAll('tbody tr[data-k]').forEach(tr => tr.addEventListener('click', () => { dev._dhcpPoolIdx = parseInt(tr.dataset.k, 10); this.renderServicesTab(dev); }));
+  }
 }
 
 // Start application
 window.addEventListener('DOMContentLoaded', () => {
   window.ptApp = new AppController();
 });
+
+function escapeHtml(str) {
+  return String(str == null ? '' : str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
